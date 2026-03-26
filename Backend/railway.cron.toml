@@ -5,4 +5,4 @@ dockerfilePath = "Dockerfile"
 [deploy]
 startCommand = "python -m scripts.sync_brown_menu"
 restartPolicyType = "NEVER"
-cronSchedule = "0 5 * * *"
+cronSchedule = "* * * * *"
