@@ -197,8 +197,19 @@ type BackendMenuListResponse = {
   total: number;
 };
 
-const API_BASE_URL = ((import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '').trim().replace(/\/$/, '');
-const MENUS_API_URL = `${API_BASE_URL}/api/v1/menus`;
+const normalizeBaseUrl = (value: string | undefined): string => (value ?? '').trim().replace(/\/$/, '');
+
+const isAbsoluteHttpUrl = (value: string): boolean => {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
+const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL as string | undefined);
+const MENUS_API_URL = isAbsoluteHttpUrl(API_BASE_URL) ? `${API_BASE_URL}/api/v1/menus` : null;
 
 const DIETARY_TAGS: DietaryTag[] = [
   'vegan',
@@ -442,6 +453,10 @@ export default function App() {
       setMenuLoadError(false);
 
       try {
+        if (!MENUS_API_URL) {
+          throw new Error('VITE_API_BASE_URL is missing or invalid. It must be an absolute http(s) URL.');
+        }
+
         const response = await fetch(MENUS_API_URL, {
           headers: {
             Accept: 'application/json',

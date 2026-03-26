@@ -8,4 +8,23 @@
   Run `npm i` to install the dependencies.
 
   Run `npm run dev` to start the development server.
+
+  ## Build
+
+  This frontend uses Vite. Production build output is `dist/`.
+
+  ```bash
+  npm run build
+  ```
+
+  ## Cloudflare Pages
+
+  Configure Cloudflare Pages to build from `Frontend/` and deploy only Vite output:
+
+  - Root directory: `Frontend`
+  - Build command: `npm run build`
+  - Build output directory: `dist`
+  - Environment variable: `VITE_API_BASE_URL=https://<your-railway-backend-domain>`
+
+  Do not set build output to `Frontend` or `/`.
   
