@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class BrownBaseModel(BaseModel):
@@ -16,6 +16,18 @@ class BrownBaseModel(BaseModel):
 class BrownHours(BrownBaseModel):
     start_at: datetime = Field(alias="start")
     end_at: datetime = Field(alias="end")
+
+    @field_validator("start_at", "end_at", mode="before")
+    @classmethod
+    def parse_iso_datetime(cls, value: object) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized.endswith("Z"):
+                normalized = f"{normalized[:-1]}+00:00"
+            return datetime.fromisoformat(normalized)
+        raise TypeError("Expected ISO datetime string or datetime value.")
 
 
 class BrownMenuItem(BrownBaseModel):
