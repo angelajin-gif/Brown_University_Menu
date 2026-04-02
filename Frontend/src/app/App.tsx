@@ -239,6 +239,60 @@ const ALLERGEN_TAGS: AllergenTag[] = [
 
 const isDietaryTag = (value: string): value is DietaryTag => DIETARY_TAGS.includes(value as DietaryTag);
 const isAllergenTag = (value: string): value is AllergenTag => ALLERGEN_TAGS.includes(value as AllergenTag);
+
+// First-pass "main dish only" display rules.
+// Keep this easy to tune by editing these two lists.
+const MAIN_DISH_ALLOW_PATTERNS: RegExp[] = [
+  /\byogurt\s*bowl\b/i,
+  /\bsalad\s*bowl\b/i,
+  /\bburrito\s*bowl\b/i,
+  /\bgrain\s*bowl\b/i,
+  /\brice\s*bowl\b/i,
+  /\bnoodle\s*bowl\b/i,
+  /\bomelet(te)?\b/i,
+  /\bsandwich\b/i,
+  /\bwrap\b/i,
+  /\bpizza\b/i,
+  /\bsoup\b/i,
+  /\bsalad\b/i,
+  /\bbowl\b/i,
+  /\bentree\b/i,
+  /\bplate\b/i,
+  /\bcombo\b/i,
+  /酸奶碗|沙拉碗|沙拉|卷饼|三明治|披萨|汤|主菜|套餐|饭|面|粥|碗|煲/,
+];
+
+const MINOR_COMPONENT_BLOCK_PATTERNS: RegExp[] = [
+  /\blettuce\b/i,
+  /\bonions?\b/i,
+  /\btomatoes?\b/i,
+  /\bpickles?\b/i,
+  /\bcucumber\b/i,
+  /\bspinach\b/i,
+  /\bdressing\b/i,
+  /\bsauce\b/i,
+  /\bcondiments?\b/i,
+  /\btoppings?\b/i,
+  /\bgarnish\b/i,
+  /\bcroutons?\b/i,
+  /生菜|洋葱|番茄|西红柿|黄瓜|腌黄瓜|酱|调料|配料|蘸料|顶料/,
+];
+
+const shouldDisplayMainDish = (item: Pick<MenuItem, 'name'>): boolean => {
+  const nameText = `${item.name.en} ${item.name.zh}`.trim();
+  if (!nameText) return true;
+
+  if (MAIN_DISH_ALLOW_PATTERNS.some((pattern) => pattern.test(nameText))) {
+    return true;
+  }
+
+  if (MINOR_COMPONENT_BLOCK_PATTERNS.some((pattern) => pattern.test(nameText))) {
+    return false;
+  }
+
+  return true;
+};
+
 const getHallDisplayLabel = (item: Pick<MenuItem, 'externalLocationName' | 'hallId'>): string =>
   item.externalLocationName?.trim() || item.hallId;
 
@@ -491,10 +545,11 @@ export default function App() {
         }
 
         const normalizedItems = payload.items.map(toMenuItem);
+        const displayItems = normalizedItems.filter(shouldDisplayMainDish);
         if (cancelled) return;
 
-        setMenuItems(normalizedItems);
-        setFavorites((prev) => prev.filter((id) => normalizedItems.some((item) => item.id === id)));
+        setMenuItems(displayItems);
+        setFavorites((prev) => prev.filter((id) => displayItems.some((item) => item.id === id)));
       } catch (error) {
         console.error('Failed to fetch menus:', error);
         if (cancelled) return;
