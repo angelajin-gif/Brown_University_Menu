@@ -284,9 +284,19 @@ const josMeltSummaryPredicate: StationPredicate = (item) => {
 const vwActionStationPredicate: StationPredicate = (item) =>
   item.name.en.trim().toLowerCase().startsWith('vw-');
 
+const vwPancakeBarPredicate: StationPredicate = (item) => {
+  const value = `${item.name.en} ${item.name.zh}`.toLowerCase();
+  return value.includes('pancake') || value.includes('pancakes');
+};
+
 const sharpeSaladSummaryPredicate: StationPredicate = (item) => {
   const value = `${item.name.en} ${item.name.zh}`.toLowerCase();
   return value.includes('salad bar') && (value.includes('sharpe') || value.includes('ratty'));
+};
+
+const sharpeHalalLunchPredicate: StationPredicate = (item) => {
+  const value = `${item.name.en} ${item.name.zh}`.toLowerCase();
+  return value.includes('chicken') || value.includes('potato') || value.includes('beef') || value.includes('rice');
 };
 
 const sharpeHalalDinnerPredicate: StationPredicate = (item) => {
@@ -302,6 +312,7 @@ const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
     'Wok 11a-3p': { type: 'custom_station' },
     'Wok 3:30p-9p': { type: 'custom_station' },
     'Sandwich Bar - Served 11am - 3pm': { type: 'summary_only', keepItems: ['Deli Andrews'] },
+    'Sandwich Bar - Served 3:30p-8p': { type: 'summary_only', keepItems: ['Deli Andrews'] },
     'Salad Bar - Served 11am -3pm': { type: 'summary_only', keepItems: ['Salad Bar Andrews'] },
     'Condiment Station': { type: 'hide' },
     "Za'atar Salmon 3:30p-9p": { type: 'summary_only', keepItems: ['Roasted Potato Wedges', "Za'atar Salmon"] },
@@ -312,7 +323,7 @@ const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
   },
   Blueroom: {
     'Lunch Hot Sandwich 11a-3p': { type: 'show_all' },
-    Pastry: { type: 'show_all' },
+    Pastry: { type: 'hide' },
     'Breakfast Sandwiches-Served 8a-10:30a': { type: 'show_all' },
     'Bagel Bar - Served 8a-10:30 am': { type: 'summary_only', keepItems: ['Bagel Bar'] },
     'Yogurt Bar - Served 8a-10:30 am': { type: 'custom_station' },
@@ -359,19 +370,8 @@ const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
     'Lunch Comforts': { type: 'show_all' },
     Harvest: { type: 'hide' },
     'Halal Lunch': {
-      type: 'filtered_show_all',
-      excludeItems: [
-        'Arcadian Salad Mix',
-        'Bean, Edamame, Pods',
-        'Scallion, Sliced 1/8"',
-        'Cilantro, Fresh, Whole',
-        'Sauce, Chili, Sweet',
-        'Sauce Ponzu',
-        'Sauce, Chili, Sriracha',
-        'Wonton Strips',
-        'Sesame Seed, Toasted',
-        'Carrot, Shredded, 1/8"',
-      ],
+      type: 'summary_only',
+      predicate: sharpeHalalLunchPredicate,
     },
     'Halal Dinner': {
       type: 'summary_only',
@@ -394,6 +394,7 @@ const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
     'Omelet Bar': { type: 'summary_only', keepItems: ['VW Omelet Bar'] },
     'Yogurt Bar - Served 7:30-10:30 am': { type: 'summary_only', keepItems: ['Breakfast - Yogurt Bar'] },
     Waffles: { type: 'summary_only', keepItems: ['VW - Belgium Waffles'] },
+    'Pancake Bar': { type: 'summary_only', predicate: vwPancakeBarPredicate },
     'Condiment Station': { type: 'hide' },
     'French Toast Bar': { type: 'summary_only', keepItems: ['French Toast'] },
     'Salad Bar': { type: 'summary_only', keepItems: ['VW - From The Garden'] },
