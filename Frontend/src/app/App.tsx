@@ -273,7 +273,9 @@ type StationDisplayRule = {
 
 const ivyGreensSummaryPredicate: StationPredicate = (item) => {
   const value = `${item.name.en} ${item.name.zh}`.toLowerCase();
-  return value.includes('ivy') && ['chicken', 'salmon', 'steak'].some((token) => value.includes(token));
+  const hasIvy = value.includes('ivy');
+  const hasAllowedProtein = value.includes('chicken') || value.includes('salmon') || value.includes('steak');
+  return hasIvy && hasAllowedProtein;
 };
 
 const josMeltSummaryPredicate: StationPredicate = (item) => {
@@ -311,6 +313,7 @@ const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
     'Breakfast Sandwiches 11a-3p': { type: 'show_all' },
     'Wok 11a-3p': { type: 'custom_station' },
     'Wok 3:30p-9p': { type: 'custom_station' },
+    'Wok Dinner 4p-8:30p': { type: 'custom_station' },
     'Sandwich Bar - Served 11am - 3pm': { type: 'summary_only', keepItems: ['Deli Andrews'] },
     'Sandwich Bar - Served 3:30p-8p': { type: 'summary_only', keepItems: ['Deli Andrews'] },
     'Salad Bar - Served 11am -3pm': { type: 'summary_only', keepItems: ['Salad Bar Andrews'] },
@@ -444,6 +447,7 @@ const stationRuleAliases: Record<string, Record<string, string>> = {
     'Salad Bar - Served 11am - 3pm': 'Salad Bar - Served 11am -3pm',
     'Salad Bar - Served 11am -3pm': 'Salad Bar - Served 11am -3pm',
     'Wok 3:30p - 9p': 'Wok 3:30p-9p',
+    'Wok Dinner 4p - 8:30p': 'Wok Dinner 4p-8:30p',
     "Za'atar Salmon 3:30p - 9p": "Za'atar Salmon 3:30p-9p",
   },
   Blueroom: {
