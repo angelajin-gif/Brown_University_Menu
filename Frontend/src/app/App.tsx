@@ -796,8 +796,25 @@ const AllergenBadge = ({ allergen, lang }: { allergen: AllergenTag; lang: Lang }
   );
 };
 
+const MACRO_BAR_MAX = {
+  protein: 30,
+  carbs: 40,
+  fat: 20,
+} as const;
+
+const MIN_NON_ZERO_BAR_PERCENT = 8;
+
+const getMacroBarPercent = (value: number, max: number): number => {
+  if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(max) || max <= 0) {
+    return 0;
+  }
+
+  const normalized = (value / max) * 100;
+  return Math.min(100, Math.max(MIN_NON_ZERO_BAR_PERCENT, normalized));
+};
+
 const MacroBar = ({ label, value, colorClass, max = 100 }: { label: string; value: number; colorClass: string; max?: number }) => {
-  const percentage = Math.min((value / max) * 100, 100);
+  const percentage = getMacroBarPercent(value, max);
   return (
     <div className="flex flex-col gap-0.5 w-full">
       <div className="flex justify-between items-center text-[10px] text-gray-500 font-medium">
@@ -862,9 +879,9 @@ const MenuItemCard = ({
       <div className={cn("mt-3 pt-3 border-t border-gray-50 flex items-end justify-between gap-4", compact && "mt-2 pt-2")}>
         {showNutrition ? (
           <div className="flex-1 grid grid-cols-3 gap-2">
-            <MacroBar label={t.protein} value={item.macros.protein} colorClass="bg-blue-400" max={50} />
-            <MacroBar label={t.carbs} value={item.macros.carbs} colorClass="bg-amber-400" max={100} />
-            <MacroBar label={t.fat} value={item.macros.fat} colorClass="bg-red-400" max={50} />
+            <MacroBar label={t.protein} value={item.macros.protein} colorClass="bg-blue-400" max={MACRO_BAR_MAX.protein} />
+            <MacroBar label={t.carbs} value={item.macros.carbs} colorClass="bg-amber-400" max={MACRO_BAR_MAX.carbs} />
+            <MacroBar label={t.fat} value={item.macros.fat} colorClass="bg-red-400" max={MACRO_BAR_MAX.fat} />
           </div>
         ) : (
           <div className="flex-1">
