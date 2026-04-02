@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   MapPin, 
   ChevronDown, 
@@ -177,6 +177,7 @@ type MenuItem = {
   tags: DietaryTag[];
   allergens: AllergenTag[];
   hallId: HallId;
+  externalLocationName: string | null;
   mealSlot: MealTab;
 };
 
@@ -189,6 +190,7 @@ type BackendMenuItem = {
   tags: string[];
   allergens: string[];
   hall_id: HallId;
+  external_location_name?: string | null;
   meal_slot: MealTab;
 };
 
@@ -237,6 +239,8 @@ const ALLERGEN_TAGS: AllergenTag[] = [
 
 const isDietaryTag = (value: string): value is DietaryTag => DIETARY_TAGS.includes(value as DietaryTag);
 const isAllergenTag = (value: string): value is AllergenTag => ALLERGEN_TAGS.includes(value as AllergenTag);
+const getHallDisplayLabel = (item: Pick<MenuItem, 'externalLocationName' | 'hallId'>): string =>
+  item.externalLocationName?.trim() || item.hallId;
 
 const toMenuItem = (item: BackendMenuItem): MenuItem => ({
   id: item.id,
@@ -253,6 +257,7 @@ const toMenuItem = (item: BackendMenuItem): MenuItem => ({
   tags: (item.tags ?? []).filter(isDietaryTag),
   allergens: (item.allergens ?? []).filter(isAllergenTag),
   hallId: item.hall_id,
+  externalLocationName: item.external_location_name ?? null,
   mealSlot: item.meal_slot,
 });
 
@@ -354,7 +359,7 @@ const MenuItemCard = ({
               {item.name[lang]}
             </h3>
             <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-medium whitespace-nowrap">
-              {t[item.hallId as keyof typeof t].split(' ')[0]}
+              {getHallDisplayLabel(item)}
             </span>
           </div>
           <div className="flex flex-wrap gap-1.5">
@@ -406,7 +411,7 @@ export default function App() {
   const [menuLoadError, setMenuLoadError] = useState(false);
   
   // Location & Search State
-  const [selectedLocation, setSelectedLocation] = useState<'all' | 'hall1' | 'hall2'>('all');
+  const [selectedLocation, setSelectedLocation] = useState<string>('all');
   const [isLocationMenuOpen, setIsLocationMenuOpen] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -440,10 +445,24 @@ export default function App() {
     setAllergenTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
   };
 
-  const handleLocationSelect = (loc: 'all' | 'hall1' | 'hall2') => {
+  const hallOptions = useMemo(() => {
+    const unique = new Set<string>();
+    for (const item of menuItems) {
+      unique.add(getHallDisplayLabel(item));
+    }
+    return Array.from(unique).sort((a, b) => a.localeCompare(b));
+  }, [menuItems]);
+
+  const handleLocationSelect = (loc: string) => {
     setSelectedLocation(loc);
     setIsLocationMenuOpen(false);
   };
+
+  useEffect(() => {
+    if (selectedLocation !== 'all' && !hallOptions.includes(selectedLocation)) {
+      setSelectedLocation('all');
+    }
+  }, [hallOptions, selectedLocation]);
 
   useEffect(() => {
     let cancelled = false;
@@ -584,7 +603,7 @@ export default function App() {
 
     // Filter by Location
     if (selectedLocation !== 'all') {
-      currentItems = currentItems.filter(item => item.hallId === selectedLocation);
+      currentItems = currentItems.filter(item => getHallDisplayLabel(item) === selectedLocation);
     }
     
     return (
@@ -841,7 +860,7 @@ export default function App() {
 
   const getHeaderTitle = () => {
     if (selectedLocation === 'all') return t.allCampus;
-    return t[selectedLocation];
+    return selectedLocation;
   };
 
   return (
@@ -898,18 +917,18 @@ export default function App() {
                     >
                       {t.allCampus}
                     </button>
-                    <button 
-                      onClick={() => handleLocationSelect('hall1')}
-                      className={cn("w-full text-left px-4 py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors", selectedLocation === 'hall1' ? "text-indigo-600 bg-indigo-50/50" : "text-gray-700")}
-                    >
-                      {t.hall1}
-                    </button>
-                    <button 
-                      onClick={() => handleLocationSelect('hall2')}
-                      className={cn("w-full text-left px-4 py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors", selectedLocation === 'hall2' ? "text-indigo-600 bg-indigo-50/50" : "text-gray-700")}
-                    >
-                      {t.hall2}
-                    </button>
+                    {hallOptions.map((hallName) => (
+                      <button
+                        key={hallName}
+                        onClick={() => handleLocationSelect(hallName)}
+                        className={cn(
+                          "w-full text-left px-4 py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors",
+                          selectedLocation === hallName ? "text-indigo-600 bg-indigo-50/50" : "text-gray-700"
+                        )}
+                      >
+                        {hallName}
+                      </button>
+                    ))}
                   </div>
                 </>
               )}
