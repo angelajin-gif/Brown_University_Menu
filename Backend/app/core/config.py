@@ -39,9 +39,13 @@ class Settings(BaseSettings):
     db_command_timeout_seconds: int = 30
 
     brown_menu_api_url: str = "https://esb-level1.brown.edu/services/oit/sys/brown-dining/v1/menus"
+    brown_nutrition_api_url: str = "https://menus.dining.brown.edu/api/get_nutrition"
+    brown_nutrition_public_base_url: str = "https://menus.dining.brown.edu/nutrition"
     menu_sync_timezone: str = "America/New_York"
     menu_sync_batch_size: int = 300
     menu_sync_only_today: bool = True
+    menu_sync_enrich_nutrition: bool = True
+    menu_sync_nutrition_concurrency: int = 12
 
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -92,7 +96,13 @@ class Settings(BaseSettings):
     def validate_supabase_db_url(cls, value: str) -> str:
         return value.strip()
 
-    @field_validator("supabase_url", "supabase_service_role_key", "brown_menu_api_url")
+    @field_validator(
+        "supabase_url",
+        "supabase_service_role_key",
+        "brown_menu_api_url",
+        "brown_nutrition_api_url",
+        "brown_nutrition_public_base_url",
+    )
     @classmethod
     def validate_trimmed_fields(cls, value: str) -> str:
         return value.strip()

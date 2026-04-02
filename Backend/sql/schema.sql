@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS menu_items (
     menu_start TIMESTAMPTZ,
     menu_end TIMESTAMPTZ,
     item_type TEXT,
+    nutrition_item_id TEXT,
+    nutrition_source_url TEXT,
+    nutrition_available BOOLEAN NOT NULL DEFAULT FALSE,
+    nutrition_synced_at TIMESTAMPTZ,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -41,6 +45,10 @@ ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS meal_name TEXT;
 ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS menu_start TIMESTAMPTZ;
 ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS menu_end TIMESTAMPTZ;
 ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS item_type TEXT;
+ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS nutrition_item_id TEXT;
+ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS nutrition_source_url TEXT;
+ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS nutrition_available BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS nutrition_synced_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_menu_items_meal_hall ON menu_items (meal_slot, hall_id);
 CREATE INDEX IF NOT EXISTS idx_menu_items_service_date ON menu_items (service_date);

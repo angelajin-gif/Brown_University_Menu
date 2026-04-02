@@ -16,6 +16,8 @@ async def run() -> None:
             f"date={result['service_date']}",
             f"locations={result['locations']}",
             f"upserted={result['upserted']}",
+            f"nutrition_candidates={result['nutrition_candidates']}",
+            f"nutrition_enriched={result['nutrition_enriched']}",
         )
     finally:
         await service.close()

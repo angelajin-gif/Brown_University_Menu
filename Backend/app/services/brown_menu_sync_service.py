@@ -4,6 +4,7 @@ import asyncio
 import re
 from datetime import date, datetime
 from typing import Any
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -43,6 +44,7 @@ ALLERGEN_TO_TAG = {
 }
 
 HALL1_LOCATION_IDS = {"AC", "SHRP", "VW"}
+FIXED_DISH_ITEM_TYPE = "recipe"
 
 
 class BrownMenuSyncService:
@@ -61,6 +63,11 @@ class BrownMenuSyncService:
 
         service_date = self._service_date_today()
         records = self._transform_to_menu_upserts(locations, service_date)
+        nutrition_candidates = sum(1 for record in records if self._is_fixed_dish_record(record))
+
+        nutrition_enriched = 0
+        if self._settings.menu_sync_enrich_nutrition:
+            nutrition_enriched = await self._enrich_records_with_nutrition(records)
 
         await asyncio.to_thread(self._deactivate_existing_for_date, service_date)
         await self._upsert_records(records)
@@ -69,6 +76,8 @@ class BrownMenuSyncService:
             "service_date": service_date.isoformat(),
             "locations": len(locations),
             "upserted": len(records),
+            "nutrition_candidates": nutrition_candidates,
+            "nutrition_enriched": nutrition_enriched,
         }
 
     async def _fetch_raw_payload(self) -> list[dict]:
@@ -154,6 +163,8 @@ class BrownMenuSyncService:
                         station_id = str(station.station_id)
                         station_slug = self._slugify(station_id)
                         for item in station.items:
+                            item_type = item.item_type.strip().lower()
+                            nutrition_item_id = str(item.item_id)
                             item_key = (
                                 f"brown-{location.location_id}-{parsed_date.isoformat()}-"
                                 f"{meal_slug}-{station_slug}-{item.item_id}"
@@ -183,12 +194,144 @@ class BrownMenuSyncService:
                                     "meal_name": meal.meal_name,
                                     "menu_start": meal.menu.hours.start_at.isoformat(),
                                     "menu_end": meal.menu.hours.end_at.isoformat(),
-                                    "item_type": item.item_type,
+                                    "item_type": item_type,
+                                    "nutrition_item_id": nutrition_item_id,
+                                    "nutrition_source_url": self._build_nutrition_source_url(
+                                        nutrition_item_id,
+                                        item_type,
+                                    ),
+                                    "nutrition_available": False,
+                                    "nutrition_synced_at": None,
                                     "updated_at": datetime.utcnow().isoformat(),
                                 }
                             )
 
         return records
+
+    @staticmethod
+    def _is_fixed_dish_record(record: dict[str, Any]) -> bool:
+        return str(record.get("item_type", "")).strip().lower() == FIXED_DISH_ITEM_TYPE
+
+    async def _enrich_records_with_nutrition(self, records: list[dict[str, Any]]) -> int:
+        recipe_item_ids = sorted(
+            {
+                str(record.get("nutrition_item_id", "")).strip()
+                for record in records
+                if self._is_fixed_dish_record(record) and record.get("nutrition_item_id")
+            }
+        )
+        if not recipe_item_ids:
+            return 0
+
+        semaphore = asyncio.Semaphore(max(1, self._settings.menu_sync_nutrition_concurrency))
+        nutrition_by_item_id: dict[str, dict[str, float | int]] = {}
+
+        async def fetch_and_store(item_id: str) -> None:
+            async with semaphore:
+                nutrition = await self._fetch_recipe_nutrition(item_id)
+                if nutrition is not None:
+                    nutrition_by_item_id[item_id] = nutrition
+
+        await asyncio.gather(*(fetch_and_store(item_id) for item_id in recipe_item_ids))
+
+        nutrition_synced_at = datetime.utcnow().isoformat()
+        enriched_count = 0
+        for record in records:
+            record["nutrition_synced_at"] = nutrition_synced_at
+
+            if not self._is_fixed_dish_record(record):
+                record["nutrition_available"] = False
+                continue
+
+            nutrition_item_id = str(record.get("nutrition_item_id", "")).strip()
+            nutrition = nutrition_by_item_id.get(nutrition_item_id)
+            if nutrition is None:
+                record["nutrition_available"] = False
+                continue
+
+            record["calories"] = nutrition["calories"]
+            record["protein"] = nutrition["protein"]
+            record["carbs"] = nutrition["carbs"]
+            record["fat"] = nutrition["fat"]
+            record["nutrition_available"] = True
+            enriched_count += 1
+
+        return enriched_count
+
+    async def _fetch_recipe_nutrition(self, item_id: str) -> dict[str, float | int] | None:
+        try:
+            response = await self._http.get(
+                self._settings.brown_nutrition_api_url,
+                params={"id": item_id, "type": FIXED_DISH_ITEM_TYPE},
+            )
+        except httpx.HTTPError:
+            return None
+        if response.status_code >= 400:
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("success") is False:
+            return None
+
+        base_values = payload.get("baseValues")
+        if not isinstance(base_values, dict):
+            return None
+
+        calories = self._coerce_calories_value(base_values.get("calories"))
+        protein = self._coerce_macro_value(base_values.get("protein"))
+        carbs = self._coerce_macro_value(base_values.get("carbohydrates"))
+        fat = self._coerce_macro_value(base_values.get("fat"))
+        if calories is None or protein is None or carbs is None or fat is None:
+            return None
+
+        return {
+            "calories": calories,
+            "protein": protein,
+            "carbs": carbs,
+            "fat": fat,
+        }
+
+    @staticmethod
+    def _coerce_calories_value(value: Any) -> int | None:
+        amount = BrownMenuSyncService._extract_amount(value)
+        if amount is None:
+            return None
+        return int(round(amount))
+
+    @staticmethod
+    def _coerce_macro_value(value: Any) -> float | None:
+        amount = BrownMenuSyncService._extract_amount(value)
+        if amount is None:
+            return None
+        return round(amount, 2)
+
+    @staticmethod
+    def _extract_amount(value: Any) -> float | None:
+        raw_value = value
+        if isinstance(value, dict):
+            raw_value = value.get("amount")
+
+        if isinstance(raw_value, (int, float)):
+            amount = float(raw_value)
+            return amount if amount >= 0 else None
+
+        if isinstance(raw_value, str):
+            match = re.search(r"-?\d+(?:\.\d+)?", raw_value.replace(",", ""))
+            if match:
+                amount = float(match.group(0))
+                return amount if amount >= 0 else None
+
+        return None
+
+    def _build_nutrition_source_url(self, item_id: str, item_type: str) -> str:
+        base_url = self._settings.brown_nutrition_public_base_url.rstrip("/")
+        query = urlencode({"type": item_type})
+        return f"{base_url}/{item_id}?{query}"
 
     @staticmethod
     def _map_meal_slot(meal_name: str) -> str:
