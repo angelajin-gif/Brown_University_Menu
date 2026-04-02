@@ -279,14 +279,6 @@ const ivyGreensSummaryPredicate: StationPredicate = (item) => {
   const hasSalmon = value.includes('salmon');
   const hasSteak = value.includes('steak');
   const keep = hasSteak || (hasIvy && (hasChicken || hasSalmon));
-  console.debug('[Greens, Lunch predicate]', {
-    rawItemName,
-    hasIvy,
-    hasChicken,
-    hasSalmon,
-    hasSteak,
-    keep,
-  });
   return keep;
 };
 
@@ -983,73 +975,6 @@ export default function App() {
       setSelectedLocation('all');
     }
   }, [hallOptions, selectedLocation]);
-
-  // TEMP DEBUG: Ivy Room Greens/Lunch diagnosis only.
-  useEffect(() => {
-    const ivyItems = menuItems.filter((item) => getHallRuleKey(getHallDisplayLabel(item)) === 'Ivy Room');
-    if (ivyItems.length === 0) {
-      console.debug('[Ivy Debug] No Ivy Room items found in normalized dataset');
-      return;
-    }
-
-    const ivyStationNames = Array.from(
-      new Set(ivyItems.map((item) => getStationDisplayLabel(item)))
-    ).sort((a, b) => a.localeCompare(b));
-
-    console.debug('[Ivy Debug] station names seen for Ivy Room', ivyStationNames);
-
-    const mealSlotsByStation: Record<string, string[]> = {};
-    for (const item of ivyItems) {
-      const stationName = getStationDisplayLabel(item);
-      const slots = mealSlotsByStation[stationName] ?? [];
-      if (!slots.includes(item.mealSlot)) {
-        slots.push(item.mealSlot);
-      }
-      mealSlotsByStation[stationName] = slots;
-    }
-
-    Object.entries(mealSlotsByStation)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .forEach(([stationName, slots]) => {
-        console.debug('[Ivy Debug] station meal slots', { stationName, mealSlots: slots });
-      });
-
-    const targetItemName = 'Ivy Signature Salmon Quinoa Kale Bowl';
-    const targetItemPresent = menuItems.some(
-      (item) => item.name.en.trim().toLowerCase() === targetItemName.toLowerCase()
-    );
-    console.debug('[Ivy Debug] target item present in normalized dataset', {
-      targetItemName,
-      present: targetItemPresent,
-    });
-
-    const greensLunchItems = ivyItems.filter((item) => {
-      const rawStationName = getStationDisplayLabel(item);
-      const stationRuleKey = getStationRuleKey('Ivy Room', rawStationName);
-      const stationLower = rawStationName.toLowerCase();
-      return stationRuleKey === 'Greens, Lunch' || stationLower.includes('greens') || stationLower.includes('lunch');
-    });
-
-    greensLunchItems.forEach((item) => {
-      const hallName = getHallDisplayLabel(item);
-      const hallMatched = getHallRuleKey(hallName) === 'Ivy Room';
-      const stationName = getStationDisplayLabel(item);
-      const stationRuleKey = getStationRuleKey('Ivy Room', stationName);
-      const stationRuleMatched = stationRuleKey === 'Greens, Lunch';
-      const keepPredicateMatched = ivyGreensSummaryPredicate(item);
-
-      console.debug('[Ivy Debug] Greens/Lunch item check', {
-        id: item.id,
-        stationName,
-        mealSlot: item.mealSlot,
-        nameEn: item.name.en,
-        nameZh: item.name.zh,
-        hallMatched,
-        stationRuleMatched,
-        keepPredicateMatched,
-      });
-    });
-  }, [menuItems]);
 
   useEffect(() => {
     let cancelled = false;
