@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class BrownBaseModel(BaseModel):
@@ -17,9 +17,8 @@ class BrownHours(BrownBaseModel):
     start_at: datetime = Field(alias="start")
     end_at: datetime = Field(alias="end")
 
-    @field_validator("start_at", "end_at", mode="before")
-    @classmethod
-    def parse_iso_datetime(cls, value: object) -> datetime:
+    @staticmethod
+    def _parse_datetime_like(value: object) -> object:
         if isinstance(value, datetime):
             return value
         if isinstance(value, str):
@@ -27,6 +26,26 @@ class BrownHours(BrownBaseModel):
             if normalized.endswith("Z"):
                 normalized = f"{normalized[:-1]}+00:00"
             return datetime.fromisoformat(normalized)
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_hours_payload(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+
+        normalized = dict(value)
+        for key in ("start", "end", "start_at", "end_at"):
+            if key in normalized:
+                normalized[key] = cls._parse_datetime_like(normalized[key])
+        return normalized
+
+    @field_validator("start_at", "end_at", mode="before")
+    @classmethod
+    def parse_iso_datetime(cls, value: object) -> datetime:
+        parsed = cls._parse_datetime_like(value)
+        if isinstance(parsed, datetime):
+            return parsed
         raise TypeError("Expected ISO datetime string or datetime value.")
 
 

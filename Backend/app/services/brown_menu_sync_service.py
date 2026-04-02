@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import date, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -55,7 +56,8 @@ class BrownMenuSyncService:
 
     async def sync_menu_items(self) -> dict[str, str | int]:
         payload = await self._fetch_raw_payload()
-        locations = TypeAdapter(list[BrownLocationMenu]).validate_python(payload)
+        normalized_payload = self._normalize_payload_hours(payload)
+        locations = TypeAdapter(list[BrownLocationMenu]).validate_python(normalized_payload)
 
         service_date = self._service_date_today()
         records = self._transform_to_menu_upserts(locations, service_date)
@@ -75,6 +77,47 @@ class BrownMenuSyncService:
         payload = response.json()
         if not isinstance(payload, list):
             raise ValueError("Brown menu payload must be a JSON array")
+        return payload
+
+    @staticmethod
+    def _parse_datetime_like(value: object) -> object:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized.endswith("Z"):
+                normalized = f"{normalized[:-1]}+00:00"
+            try:
+                return datetime.fromisoformat(normalized)
+            except ValueError:
+                return value
+        return value
+
+    def _normalize_payload_hours(self, payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for location in payload:
+            meals = location.get("meals")
+            if not isinstance(meals, dict):
+                continue
+
+            for meal_entries in meals.values():
+                if not isinstance(meal_entries, list):
+                    continue
+
+                for meal in meal_entries:
+                    if not isinstance(meal, dict):
+                        continue
+                    menu = meal.get("menu")
+                    if not isinstance(menu, dict):
+                        continue
+                    hours = menu.get("hours")
+                    if not isinstance(hours, dict):
+                        continue
+
+                    if "start" in hours:
+                        hours["start"] = self._parse_datetime_like(hours.get("start"))
+                    if "end" in hours:
+                        hours["end"] = self._parse_datetime_like(hours.get("end"))
+
         return payload
 
     @staticmethod
