@@ -278,7 +278,7 @@ const ivyGreensSummaryPredicate: StationPredicate = (item) => {
 
 const josMeltSummaryPredicate: StationPredicate = (item) => {
   const value = `${item.name.en} ${item.name.zh}`.toLowerCase();
-  return value.includes("jo's bar");
+  return value.includes("jo's bar") || value.includes('jos bar') || (value.includes("jo's") && value.includes('bar'));
 };
 
 const vwActionStationPredicate: StationPredicate = (item) =>
@@ -287,6 +287,11 @@ const vwActionStationPredicate: StationPredicate = (item) =>
 const sharpeSaladSummaryPredicate: StationPredicate = (item) => {
   const value = `${item.name.en} ${item.name.zh}`.toLowerCase();
   return value.includes('salad bar') && (value.includes('sharpe') || value.includes('ratty'));
+};
+
+const sharpeHalalDinnerPredicate: StationPredicate = (item) => {
+  const value = `${item.name.en} ${item.name.zh}`.toLowerCase();
+  return value.includes('chicken') || value.includes('potato');
 };
 
 const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
@@ -368,6 +373,10 @@ const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
         'Carrot, Shredded, 1/8"',
       ],
     },
+    'Halal Dinner': {
+      type: 'summary_only',
+      predicate: sharpeHalalDinnerPredicate,
+    },
     Southwest: { type: 'hide' },
     Pizza: { type: 'show_all' },
     Pasta: { type: 'summary_only', keepItems: ['MDR-Pasta Bar'] },
@@ -408,6 +417,7 @@ const hallRuleAliases: Record<string, string> = {
   'Blue Room Cafe': 'Blueroom',
   'Ivy Room': 'Ivy Room',
   "Josiah's": "Josiah's",
+  'Josiah’s': "Josiah's",
   "Jo's": "Josiah's",
   Josiahs: "Josiah's",
   'School of Engineering': 'School of Engineering',
@@ -441,6 +451,10 @@ const stationRuleAliases: Record<string, Record<string, string>> = {
     'Breakfast Sandwiches - Served 8a-10:30a': 'Breakfast Sandwiches-Served 8a-10:30a',
     'Salad Bar - Served 11am - 3pm': 'Salad Bar - Served 11am -3pm',
     'Salad Bar - Served 11am -3pm': 'Salad Bar - Served 11am -3pm',
+  },
+  "Josiah's": {
+    'Melt 6pm - 11pm': 'Melt 6pm-11pm',
+    'Melt - 6pm-11pm': 'Melt 6pm-11pm',
   },
   'Sharpe Refectory': {
     'Greens - Lunch': 'Greens, Lunch',
@@ -510,6 +524,35 @@ const normalizeMealSlotForDisplay = (
   }
 
   return normalizedMealSlot;
+};
+
+const isBlueRoomPastryStation = (item: Pick<MenuItem, 'externalLocationName' | 'hallId' | 'stationName'>): boolean => {
+  const hallKey = getHallRuleKey(getHallDisplayLabel(item));
+  if (hallKey !== 'Blueroom') return false;
+  const stationKey = getStationRuleKey(hallKey, getStationDisplayLabel(item));
+  return stationKey === 'Pastry';
+};
+
+const shouldIncludeItemForMealTab = (item: MenuItem, tab: MealTab): boolean => {
+  if (item.mealSlot === tab) return true;
+
+  // Blue Room pastry is intentionally visible in both breakfast and lunch tabs.
+  if (isBlueRoomPastryStation(item) && (tab === 'breakfast' || tab === 'lunch')) {
+    return true;
+  }
+
+  return false;
+};
+
+const getItemDisplayName = (item: MenuItem, lang: Lang): string => {
+  const rawName = item.name[lang];
+
+  // Keep raw matching data intact; only remove "Retail" from Blue Room pastry display text.
+  if (isBlueRoomPastryStation(item)) {
+    return rawName.replace(/\bretail\b/gi, '').replace(/\s{2,}/g, ' ').trim();
+  }
+
+  return rawName;
 };
 
 const defaultStationRule: StationDisplayRule = { type: 'show_all' };
@@ -772,7 +815,7 @@ const MenuItemCard = ({
         <div className="pr-4">
           <div className="flex items-center gap-2 mb-1.5">
             <h3 className={cn("font-bold text-gray-900 leading-tight", compact ? "text-sm" : "text-base")}>
-              {item.name[lang]}
+              {getItemDisplayName(item, lang)}
             </h3>
             <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-medium whitespace-nowrap">
               {getHallDisplayLabel(item)}
@@ -1058,7 +1101,8 @@ export default function App() {
         item.name.zh.includes(q)
       );
     } else {
-      currentItems = currentItems.filter(item => item.mealSlot === mealTab);
+      currentItems = currentItems.filter((item) => shouldIncludeItemForMealTab(item, mealTab));
+      currentItems = Array.from(new Map(currentItems.map((item) => [item.id, item])).values());
     }
 
     // Filter by Location
