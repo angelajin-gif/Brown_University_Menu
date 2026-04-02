@@ -275,12 +275,16 @@ const ivyGreensSummaryPredicate: StationPredicate = (item) => {
   const rawItemName = item.name.en;
   const value = rawItemName.toLowerCase();
   const hasIvy = value.includes('ivy');
-  const hasAllowedProtein = value.includes('chicken') || value.includes('salmon') || value.includes('steak');
-  const keep = hasIvy && hasAllowedProtein;
+  const hasChicken = value.includes('chicken');
+  const hasSalmon = value.includes('salmon');
+  const hasSteak = value.includes('steak');
+  const keep = hasSteak || (hasIvy && (hasChicken || hasSalmon));
   console.debug('[Greens, Lunch predicate]', {
     rawItemName,
     hasIvy,
-    hasAllowedProtein,
+    hasChicken,
+    hasSalmon,
+    hasSteak,
     keep,
   });
   return keep;
