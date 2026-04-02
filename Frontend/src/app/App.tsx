@@ -244,53 +244,68 @@ const isAllergenTag = (value: string): value is AllergenTag => ALLERGEN_TAGS.inc
 // Keep this easy to tune by editing these two lists.
 const MAIN_DISH_ALLOW_PATTERNS: RegExp[] = [
   /\byogurt\s*bowl\b/i,
-  /\bsalad\s*bowl\b/i,
   /\bburrito\s*bowl\b/i,
   /\bgrain\s*bowl\b/i,
   /\brice\s*bowl\b/i,
   /\bnoodle\s*bowl\b/i,
+  /\bsalad\s*bowl\b/i,
   /\bomelet(te)?\b/i,
   /\bsandwich\b/i,
   /\bwrap\b/i,
   /\bpizza\b/i,
   /\bsoup\b/i,
-  /\bsalad\b/i,
-  /\bbowl\b/i,
   /\bentree\b/i,
-  /\bplate\b/i,
   /\bcombo\b/i,
-  /酸奶碗|沙拉碗|沙拉|卷饼|三明治|披萨|汤|主菜|套餐|饭|面|粥|碗|煲/,
+  /酸奶碗|卷饼碗|杂粮碗|饭碗|面碗|沙拉碗|煎蛋卷|蛋卷|三明治|卷饼|披萨|汤|主菜|套餐/,
 ];
 
 const MINOR_COMPONENT_BLOCK_PATTERNS: RegExp[] = [
+  /\byogurt\s*toppings?\b/i,
+  /\bburger\s*bar\b/i,
+  /\bsalad\s*bar\b/i,
+  /\bfruit\s*bar\b/i,
+  /\btoppings?\b/i,
+  /\bcondiments?\b/i,
+  /\bgarnish\b/i,
+  /\bdressing\b/i,
+  /\bsauce\b/i,
+  /\baioli\b/i,
+  /\bsalsa\b/i,
+  /\bspread\b/i,
   /\blettuce\b/i,
   /\bonions?\b/i,
   /\btomatoes?\b/i,
-  /\bpickles?\b/i,
   /\bcucumber\b/i,
+  /\bpickles?\b/i,
   /\bspinach\b/i,
-  /\bdressing\b/i,
-  /\bsauce\b/i,
-  /\bcondiments?\b/i,
-  /\btoppings?\b/i,
-  /\bgarnish\b/i,
+  /\barugula\b/i,
+  /\bcheese\b/i,
   /\bcroutons?\b/i,
-  /生菜|洋葱|番茄|西红柿|黄瓜|腌黄瓜|酱|调料|配料|蘸料|顶料/,
+  /\bblueberries?\b/i,
+  /\bstrawberries?\b/i,
+  /\bgranola\b/i,
+  /\bparmesan\b/i,
+  /生菜|洋葱|番茄|西红柿|黄瓜|酱|调料|配料|小料|顶料|芝士|奶酪|水果|蓝莓|草莓|格兰诺拉/,
 ];
 
 const shouldDisplayMainDish = (item: Pick<MenuItem, 'name'>): boolean => {
   const nameText = `${item.name.en} ${item.name.zh}`.trim();
-  if (!nameText) return true;
+  if (!nameText) {
+    console.debug('[main-dish-filter] filtered item:', item.name.en, 'reason=empty-name');
+    return false;
+  }
+
+  if (MINOR_COMPONENT_BLOCK_PATTERNS.some((pattern) => pattern.test(nameText))) {
+    console.debug('[main-dish-filter] filtered item:', item.name.en, 'reason=blocklist-match');
+    return false;
+  }
 
   if (MAIN_DISH_ALLOW_PATTERNS.some((pattern) => pattern.test(nameText))) {
     return true;
   }
 
-  if (MINOR_COMPONENT_BLOCK_PATTERNS.some((pattern) => pattern.test(nameText))) {
-    return false;
-  }
-
-  return true;
+  console.debug('[main-dish-filter] filtered item:', item.name.en, 'reason=not-allowlisted');
+  return false;
 };
 
 const getHallDisplayLabel = (item: Pick<MenuItem, 'externalLocationName' | 'hallId'>): string =>
