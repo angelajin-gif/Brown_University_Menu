@@ -272,10 +272,18 @@ type StationDisplayRule = {
 };
 
 const ivyGreensSummaryPredicate: StationPredicate = (item) => {
-  const value = `${item.name.en} ${item.name.zh}`.toLowerCase();
+  const rawItemName = item.name.en;
+  const value = rawItemName.toLowerCase();
   const hasIvy = value.includes('ivy');
   const hasAllowedProtein = value.includes('chicken') || value.includes('salmon') || value.includes('steak');
-  return hasIvy && hasAllowedProtein;
+  const keep = hasIvy && hasAllowedProtein;
+  console.debug('[Greens, Lunch predicate]', {
+    rawItemName,
+    hasIvy,
+    hasAllowedProtein,
+    keep,
+  });
+  return keep;
 };
 
 const josMeltSummaryPredicate: StationPredicate = (item) => {
