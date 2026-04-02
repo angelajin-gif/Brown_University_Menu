@@ -250,6 +250,12 @@ const getStationDisplayLabel = (item: Pick<MenuItem, 'stationName'>): string =>
 
 const normalizeText = (value: string): string => value.trim().toLowerCase();
 
+const DEBUG_STATION_RULES = ['1', 'true', 'yes'].includes(
+  String(import.meta.env.VITE_DEBUG_STATION_RULES ?? '')
+    .trim()
+    .toLowerCase()
+);
+
 const itemMatchesExactName = (item: Pick<MenuItem, 'name'>, targetName: string): boolean => {
   const target = normalizeText(targetName);
   return normalizeText(item.name.en) === target || normalizeText(item.name.zh) === target;
@@ -278,16 +284,22 @@ const josMeltSummaryPredicate: StationPredicate = (item) => {
 const vwActionStationPredicate: StationPredicate = (item) =>
   item.name.en.trim().toLowerCase().startsWith('vw-');
 
+const sharpeSaladSummaryPredicate: StationPredicate = (item) => {
+  const value = `${item.name.en} ${item.name.zh}`.toLowerCase();
+  return value.includes('salad bar') && (value.includes('sharpe') || value.includes('ratty'));
+};
+
 const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
   Andrews: {
     'Deli 11a-3p': { type: 'show_all' },
     'Hot Sandwich 11a-3p': { type: 'show_all' },
     'Breakfast Sandwiches 11a-3p': { type: 'show_all' },
     'Wok 11a-3p': { type: 'custom_station' },
+    'Wok 3:30p-9p': { type: 'custom_station' },
     'Sandwich Bar - Served 11am - 3pm': { type: 'summary_only', keepItems: ['Deli Andrews'] },
-    'Salad Bar - Served 11am - 3pm': { type: 'summary_only', keepItems: ['Salad Bar Andrews'] },
+    'Salad Bar - Served 11am -3pm': { type: 'summary_only', keepItems: ['Salad Bar Andrews'] },
     'Condiment Station': { type: 'hide' },
-    "Za'atar Salmon 3:30p-9p": { type: 'summary_only', keepItems: ["Roasted Potato Wedges Za'atar Salmon"] },
+    "Za'atar Salmon 3:30p-9p": { type: 'summary_only', keepItems: ['Roasted Potato Wedges', "Za'atar Salmon"] },
     'Wing Bar 3:30p-9p': { type: 'summary_only', keepItems: ['Buffalo Wings'] },
     'Pizza 11a-3p': { type: 'summary_only', keepItems: ['Taco Bar'] },
     'Burrito 11a-3p': { type: 'summary_only', keepItems: ['Burrito Bowl'] },
@@ -297,10 +309,10 @@ const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
     'Lunch Hot Sandwich 11a-3p': { type: 'show_all' },
     Pastry: { type: 'show_all' },
     'Breakfast Sandwiches-Served 8a-10:30a': { type: 'show_all' },
-    'Bagel Bar- Served 8a-10:30 am': { type: 'summary_only', keepItems: ['Bagel Bar'] },
+    'Bagel Bar - Served 8a-10:30 am': { type: 'summary_only', keepItems: ['Bagel Bar'] },
     'Yogurt Bar - Served 8a-10:30 am': { type: 'custom_station' },
     'Sandwich Bar - Served 11am - 3pm': { type: 'summary_only', keepItems: ['Deli Blue Room'] },
-    'Salad Bar - Served 11am - 3pm': { type: 'summary_only', keepItems: ['Salad Bar Blue Room'] },
+    'Salad Bar - Served 11am -3pm': { type: 'summary_only', keepItems: ['Salad Bar Blue Room'] },
     'Soup - Served 11am-3pm': { type: 'show_all' },
   },
   'Ivy Room': {
@@ -323,6 +335,16 @@ const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
   },
   'Sharpe Refectory': {
     'Greens, Breakfast': { type: 'summary_only', keepItems: ['Breakfast - Fruit Bar', 'Breakfast - Yogurt Bar'] },
+    'Greens, Lunch': {
+      type: 'summary_only',
+      keepItems: ['Salad Bar Sharpe', 'Sharpe Salad Bar', 'Ratty Salad Bar'],
+      predicate: sharpeSaladSummaryPredicate,
+    },
+    'Salad Bar': {
+      type: 'summary_only',
+      keepItems: ['Salad Bar Sharpe', 'Sharpe Salad Bar', 'Ratty Salad Bar'],
+      predicate: sharpeSaladSummaryPredicate,
+    },
     'Breakfast Comforts': { type: 'hide' },
     'Breakfast Sides': { type: 'hide' },
     'Sweets Breakfast': { type: 'hide' },
@@ -386,20 +408,126 @@ const hallRuleAliases: Record<string, string> = {
   'Blue Room Cafe': 'Blueroom',
   'Ivy Room': 'Ivy Room',
   "Josiah's": "Josiah's",
+  "Jo's": "Josiah's",
   Josiahs: "Josiah's",
   'School of Engineering': 'School of Engineering',
+  'School Of Engineering': 'School of Engineering',
   'Sharpe Refectory': 'Sharpe Refectory',
+  'The Ratty': 'Sharpe Refectory',
+  'Sharpe Refectory (The Ratty)': 'Sharpe Refectory',
   'Verney-Woolley': 'Verney-Woolley',
   'Verney Woolley': 'Verney-Woolley',
+  'Verney Woolley Dining Hall': 'Verney-Woolley',
+};
+
+const getHallRuleKey = (hallName: string): string =>
+  hallRuleAliases[hallName.trim()] ?? hallName.trim();
+
+const hallHiddenFromSelectorRuleKeys = new Set<string>(['School of Engineering']);
+const hallSelectorPreferredLabelsByRuleKey: Record<string, string> = {
+  'Verney-Woolley': 'Verney-Woolley',
+};
+
+const stationRuleAliases: Record<string, Record<string, string>> = {
+  Andrews: {
+    'Salad Bar - Served 11am - 3pm': 'Salad Bar - Served 11am -3pm',
+    'Salad Bar - Served 11am -3pm': 'Salad Bar - Served 11am -3pm',
+    'Wok 3:30p - 9p': 'Wok 3:30p-9p',
+    "Za'atar Salmon 3:30p - 9p": "Za'atar Salmon 3:30p-9p",
+  },
+  Blueroom: {
+    'Bagel Bar- Served 8a-10:30 am': 'Bagel Bar - Served 8a-10:30 am',
+    'Bagel Bar - Served 8a-10:30 am': 'Bagel Bar - Served 8a-10:30 am',
+    'Breakfast Sandwiches - Served 8a-10:30a': 'Breakfast Sandwiches-Served 8a-10:30a',
+    'Salad Bar - Served 11am - 3pm': 'Salad Bar - Served 11am -3pm',
+    'Salad Bar - Served 11am -3pm': 'Salad Bar - Served 11am -3pm',
+  },
+  'Sharpe Refectory': {
+    'Greens - Lunch': 'Greens, Lunch',
+  },
+};
+
+const getStationRuleKey = (hallKey: string, stationName: string): string => {
+  const trimmed = stationName.trim();
+  const aliases = stationRuleAliases[hallKey];
+  return aliases?.[trimmed] ?? trimmed;
+};
+
+const normalizeMealSlot = (value: string | undefined): MealTab => {
+  if (value === 'breakfast' || value === 'lunch' || value === 'dinner') {
+    return value;
+  }
+  return 'lunch';
+};
+
+const stationMealSlotOverrides: Record<string, Record<string, MealTab>> = {
+  Blueroom: {
+    'Bagel Bar - Served 8a-10:30 am': 'breakfast',
+    'Breakfast Sandwiches-Served 8a-10:30a': 'breakfast',
+    'Yogurt Bar - Served 8a-10:30 am': 'breakfast',
+  },
+  "Josiah's": {
+    '*': 'dinner',
+  },
+  'Sharpe Refectory': {
+    'Dinner Comforts': 'dinner',
+    'Dinner Sides': 'dinner',
+    'Sweets Dinner': 'dinner',
+    'Halal Dinner': 'dinner',
+  },
+};
+
+const normalizeMealSlotForDisplay = (
+  mealSlot: string,
+  hallDisplayName: string | null | undefined,
+  stationDisplayName: string | null | undefined
+): MealTab => {
+  const normalizedMealSlot = normalizeMealSlot(mealSlot);
+  const hallKey = hallDisplayName ? getHallRuleKey(hallDisplayName) : '';
+  const stationName = stationDisplayName?.trim() ?? '';
+  const stationKey = getStationRuleKey(hallKey, stationName);
+  const stationLower = stationKey.toLowerCase();
+
+  const hallOverrides = stationMealSlotOverrides[hallKey];
+  if (hallOverrides?.[stationKey]) {
+    return hallOverrides[stationKey];
+  }
+  if (hallOverrides?.['*']) {
+    return hallOverrides['*'];
+  }
+
+  if (hallKey === 'Sharpe Refectory') {
+    if (stationLower.includes('breakfast')) {
+      return 'breakfast';
+    }
+    if (
+      stationLower.includes('dinner') ||
+      stationLower.includes('supper') ||
+      stationLower.includes('3:30p-9p')
+    ) {
+      return 'dinner';
+    }
+  }
+
+  return normalizedMealSlot;
 };
 
 const defaultStationRule: StationDisplayRule = { type: 'show_all' };
 
 const getStationRule = (hallName: string, stationName: string): StationDisplayRule => {
-  const hallKey = hallRuleAliases[hallName.trim()] ?? hallName.trim();
+  const hallKey = getHallRuleKey(hallName);
+  const stationKey = getStationRuleKey(hallKey, stationName);
+  if (DEBUG_STATION_RULES && stationKey !== stationName.trim()) {
+    console.debug('[station-rule-alias]', {
+      hallName,
+      hallKey,
+      stationName,
+      stationKey,
+    });
+  }
   const hallRules = hallDisplayRules[hallKey];
   if (!hallRules) return defaultStationRule;
-  return hallRules[stationName] ?? hallRules['*'] ?? defaultStationRule;
+  return hallRules[stationKey] ?? hallRules['*'] ?? defaultStationRule;
 };
 
 const applySummaryOnlyRule = (items: MenuItem[], rule: StationDisplayRule): MenuItem[] =>
@@ -447,12 +575,34 @@ const buildStationSections = (items: MenuItem[]): StationRenderSection[] => {
 
   for (const group of grouped.values()) {
     const rule = getStationRule(group.hallName, group.stationName);
+    const mealSlotLabel = Array.from(new Set(group.items.map((item) => item.mealSlot))).join(',');
+    const rawCount = group.items.length;
 
     if (rule.type === 'hide') {
+      if (DEBUG_STATION_RULES) {
+        console.debug('[station-rule]', {
+          hallName: group.hallName,
+          stationName: group.stationName,
+          mealSlot: mealSlotLabel,
+          ruleType: rule.type,
+          keptItemCount: 0,
+          rawItemCount: rawCount,
+        });
+      }
       continue;
     }
 
     if (rule.type === 'custom_station') {
+      if (DEBUG_STATION_RULES) {
+        console.debug('[station-rule]', {
+          hallName: group.hallName,
+          stationName: group.stationName,
+          mealSlot: mealSlotLabel,
+          ruleType: rule.type,
+          keptItemCount: rawCount,
+          rawItemCount: rawCount,
+        });
+      }
       sections.push({
         kind: 'custom_station',
         key: `${group.hallName}:::${group.stationName}`,
@@ -471,7 +621,28 @@ const buildStationSections = (items: MenuItem[]): StationRenderSection[] => {
     }
 
     if (stationItems.length === 0) {
+      if (DEBUG_STATION_RULES) {
+        console.debug('[station-rule]', {
+          hallName: group.hallName,
+          stationName: group.stationName,
+          mealSlot: mealSlotLabel,
+          ruleType: rule.type,
+          keptItemCount: 0,
+          rawItemCount: rawCount,
+        });
+      }
       continue;
+    }
+
+    if (DEBUG_STATION_RULES) {
+      console.debug('[station-rule]', {
+        hallName: group.hallName,
+        stationName: group.stationName,
+        mealSlot: mealSlotLabel,
+        ruleType: rule.type,
+        keptItemCount: stationItems.length,
+        rawItemCount: rawCount,
+      });
     }
 
     sections.push({
@@ -503,7 +674,7 @@ const toMenuItem = (item: BackendMenuItem): MenuItem => ({
   hallId: item.hall_id,
   externalLocationName: item.external_location_name ?? null,
   stationName: item.station_name ?? null,
-  mealSlot: item.meal_slot,
+  mealSlot: normalizeMealSlotForDisplay(item.meal_slot, item.external_location_name, item.station_name),
 });
 
 type ChatMessage = {
@@ -716,11 +887,30 @@ export default function App() {
   };
 
   const hallOptions = useMemo(() => {
-    const unique = new Set<string>();
+    const byHallKey = new Map<string, string>();
+
     for (const item of menuItems) {
-      unique.add(getHallDisplayLabel(item));
+      const rawLabel = getHallDisplayLabel(item);
+      const hallKey = getHallRuleKey(rawLabel);
+
+      if (hallHiddenFromSelectorRuleKeys.has(hallKey)) {
+        continue;
+      }
+
+      const preferredLabel = hallSelectorPreferredLabelsByRuleKey[hallKey];
+      const candidateLabel = preferredLabel ?? rawLabel;
+      const existing = byHallKey.get(hallKey);
+      if (!existing) {
+        byHallKey.set(hallKey, candidateLabel);
+        continue;
+      }
+
+      if (!preferredLabel && existing === item.hallId) {
+        byHallKey.set(hallKey, rawLabel);
+      }
     }
-    return Array.from(unique).sort((a, b) => a.localeCompare(b));
+
+    return Array.from(byHallKey.values()).sort((a, b) => a.localeCompare(b));
   }, [menuItems]);
 
   const handleLocationSelect = (loc: string) => {
@@ -873,7 +1063,10 @@ export default function App() {
 
     // Filter by Location
     if (selectedLocation !== 'all') {
-      currentItems = currentItems.filter(item => getHallDisplayLabel(item) === selectedLocation);
+      const selectedHallKey = getHallRuleKey(selectedLocation);
+      currentItems = currentItems.filter(
+        (item) => getHallRuleKey(getHallDisplayLabel(item)) === selectedHallKey
+      );
     }
 
     const stationSections = buildStationSections(currentItems);
