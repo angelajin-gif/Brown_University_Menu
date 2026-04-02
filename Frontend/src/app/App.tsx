@@ -178,6 +178,7 @@ type MenuItem = {
   allergens: AllergenTag[];
   hallId: HallId;
   externalLocationName: string | null;
+  stationName: string | null;
   mealSlot: MealTab;
 };
 
@@ -191,6 +192,7 @@ type BackendMenuItem = {
   allergens: string[];
   hall_id: HallId;
   external_location_name?: string | null;
+  station_name?: string | null;
   meal_slot: MealTab;
 };
 
@@ -240,76 +242,249 @@ const ALLERGEN_TAGS: AllergenTag[] = [
 const isDietaryTag = (value: string): value is DietaryTag => DIETARY_TAGS.includes(value as DietaryTag);
 const isAllergenTag = (value: string): value is AllergenTag => ALLERGEN_TAGS.includes(value as AllergenTag);
 
-// First-pass "main dish only" display rules.
-// Keep this easy to tune by editing these two lists.
-const MAIN_DISH_ALLOW_PATTERNS: RegExp[] = [
-  /\byogurt\s*bowl\b/i,
-  /\bburrito\s*bowl\b/i,
-  /\bgrain\s*bowl\b/i,
-  /\brice\s*bowl\b/i,
-  /\bnoodle\s*bowl\b/i,
-  /\bsalad\s*bowl\b/i,
-  /\bomelet(te)?\b/i,
-  /\bsandwich\b/i,
-  /\bwrap\b/i,
-  /\bpizza\b/i,
-  /\bsoup\b/i,
-  /\bentree\b/i,
-  /\bcombo\b/i,
-  /酸奶碗|卷饼碗|杂粮碗|饭碗|面碗|沙拉碗|煎蛋卷|蛋卷|三明治|卷饼|披萨|汤|主菜|套餐/,
-];
-
-const MINOR_COMPONENT_BLOCK_PATTERNS: RegExp[] = [
-  /\byogurt\s*toppings?\b/i,
-  /\bburger\s*bar\b/i,
-  /\bsalad\s*bar\b/i,
-  /\bfruit\s*bar\b/i,
-  /\btoppings?\b/i,
-  /\bcondiments?\b/i,
-  /\bgarnish\b/i,
-  /\bdressing\b/i,
-  /\bsauce\b/i,
-  /\baioli\b/i,
-  /\bsalsa\b/i,
-  /\bspread\b/i,
-  /\blettuce\b/i,
-  /\bonions?\b/i,
-  /\btomatoes?\b/i,
-  /\bcucumber\b/i,
-  /\bpickles?\b/i,
-  /\bspinach\b/i,
-  /\barugula\b/i,
-  /\bcheese\b/i,
-  /\bcroutons?\b/i,
-  /\bblueberries?\b/i,
-  /\bstrawberries?\b/i,
-  /\bgranola\b/i,
-  /\bparmesan\b/i,
-  /生菜|洋葱|番茄|西红柿|黄瓜|酱|调料|配料|小料|顶料|芝士|奶酪|水果|蓝莓|草莓|格兰诺拉/,
-];
-
-const shouldDisplayMainDish = (item: Pick<MenuItem, 'name'>): boolean => {
-  const nameText = `${item.name.en} ${item.name.zh}`.trim();
-  if (!nameText) {
-    console.debug('[main-dish-filter] filtered item:', item.name.en, 'reason=empty-name');
-    return false;
-  }
-
-  if (MINOR_COMPONENT_BLOCK_PATTERNS.some((pattern) => pattern.test(nameText))) {
-    console.debug('[main-dish-filter] filtered item:', item.name.en, 'reason=blocklist-match');
-    return false;
-  }
-
-  if (MAIN_DISH_ALLOW_PATTERNS.some((pattern) => pattern.test(nameText))) {
-    return true;
-  }
-
-  console.debug('[main-dish-filter] filtered item:', item.name.en, 'reason=not-allowlisted');
-  return false;
-};
-
 const getHallDisplayLabel = (item: Pick<MenuItem, 'externalLocationName' | 'hallId'>): string =>
   item.externalLocationName?.trim() || item.hallId;
+
+const getStationDisplayLabel = (item: Pick<MenuItem, 'stationName'>): string =>
+  item.stationName?.trim() || 'Unassigned Station';
+
+const normalizeText = (value: string): string => value.trim().toLowerCase();
+
+const itemMatchesExactName = (item: Pick<MenuItem, 'name'>, targetName: string): boolean => {
+  const target = normalizeText(targetName);
+  return normalizeText(item.name.en) === target || normalizeText(item.name.zh) === target;
+};
+
+type StationRuleType = 'show_all' | 'hide' | 'summary_only' | 'custom_station' | 'filtered_show_all';
+type StationPredicate = (item: MenuItem) => boolean;
+
+type StationDisplayRule = {
+  type: StationRuleType;
+  keepItems?: string[];
+  excludeItems?: string[];
+  predicate?: StationPredicate;
+};
+
+const ivyGreensSummaryPredicate: StationPredicate = (item) => {
+  const value = `${item.name.en} ${item.name.zh}`.toLowerCase();
+  return value.includes('ivy') && ['chicken', 'salmon', 'steak'].some((token) => value.includes(token));
+};
+
+const josMeltSummaryPredicate: StationPredicate = (item) => {
+  const value = `${item.name.en} ${item.name.zh}`.toLowerCase();
+  return value.includes("jo's bar");
+};
+
+const vwActionStationPredicate: StationPredicate = (item) =>
+  item.name.en.trim().toLowerCase().startsWith('vw-');
+
+const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
+  Andrews: {
+    'Deli 11a-3p': { type: 'show_all' },
+    'Hot Sandwich 11a-3p': { type: 'show_all' },
+    'Breakfast Sandwiches 11a-3p': { type: 'show_all' },
+    'Wok 11a-3p': { type: 'custom_station' },
+    'Sandwich Bar - Served 11am - 3pm': { type: 'summary_only', keepItems: ['Deli Andrews'] },
+    'Salad Bar - Served 11am - 3pm': { type: 'summary_only', keepItems: ['Salad Bar Andrews'] },
+    'Condiment Station': { type: 'hide' },
+    "Za'atar Salmon 3:30p-9p": { type: 'summary_only', keepItems: ["Roasted Potato Wedges Za'atar Salmon"] },
+    'Wing Bar 3:30p-9p': { type: 'summary_only', keepItems: ['Buffalo Wings'] },
+    'Pizza 11a-3p': { type: 'summary_only', keepItems: ['Taco Bar'] },
+    'Burrito 11a-3p': { type: 'summary_only', keepItems: ['Burrito Bowl'] },
+    'Granola Bowl 11a-3p': { type: 'summary_only', keepItems: ['Granola Bowl'] },
+  },
+  Blueroom: {
+    'Lunch Hot Sandwich 11a-3p': { type: 'show_all' },
+    Pastry: { type: 'show_all' },
+    'Breakfast Sandwiches-Served 8a-10:30a': { type: 'show_all' },
+    'Bagel Bar- Served 8a-10:30 am': { type: 'summary_only', keepItems: ['Bagel Bar'] },
+    'Yogurt Bar - Served 8a-10:30 am': { type: 'custom_station' },
+    'Sandwich Bar - Served 11am - 3pm': { type: 'summary_only', keepItems: ['Deli Blue Room'] },
+    'Salad Bar - Served 11am - 3pm': { type: 'summary_only', keepItems: ['Salad Bar Blue Room'] },
+    'Soup - Served 11am-3pm': { type: 'show_all' },
+  },
+  'Ivy Room': {
+    'Grab and Go': { type: 'show_all' },
+    Smoothie: { type: 'hide' },
+    'Greens, Lunch': { type: 'summary_only', predicate: ivyGreensSummaryPredicate },
+    Deli: { type: 'hide' },
+    'Dinner Comforts': { type: 'show_all' },
+  },
+  "Josiah's": {
+    'Salad Bar 6pm-12am': { type: 'summary_only', keepItems: ['Salad Bar'] },
+    'Grill 6am-2am': { type: 'show_all' },
+    Sweets: { type: 'show_all' },
+    'Melt 6pm-11pm': { type: 'summary_only', predicate: josMeltSummaryPredicate },
+    'Milkshake 6pm-11pm': { type: 'hide' },
+    'Condiment Station': { type: 'hide' },
+  },
+  'School of Engineering': {
+    '*': { type: 'hide' },
+  },
+  'Sharpe Refectory': {
+    'Greens, Breakfast': { type: 'summary_only', keepItems: ['Breakfast - Fruit Bar', 'Breakfast - Yogurt Bar'] },
+    'Breakfast Comforts': { type: 'hide' },
+    'Breakfast Sides': { type: 'hide' },
+    'Sweets Breakfast': { type: 'hide' },
+    'Oatmeal Bar': { type: 'hide' },
+    'Omelet Bar': { type: 'summary_only', keepItems: ['Sharpe Omelet Bar'] },
+    Soups: { type: 'show_all' },
+    'Lunch Comforts': { type: 'show_all' },
+    Harvest: { type: 'hide' },
+    'Halal Lunch': {
+      type: 'filtered_show_all',
+      excludeItems: [
+        'Arcadian Salad Mix',
+        'Bean, Edamame, Pods',
+        'Scallion, Sliced 1/8"',
+        'Cilantro, Fresh, Whole',
+        'Sauce, Chili, Sweet',
+        'Sauce Ponzu',
+        'Sauce, Chili, Sriracha',
+        'Wonton Strips',
+        'Sesame Seed, Toasted',
+        'Carrot, Shredded, 1/8"',
+      ],
+    },
+    Southwest: { type: 'hide' },
+    Pizza: { type: 'show_all' },
+    Pasta: { type: 'summary_only', keepItems: ['MDR-Pasta Bar'] },
+    'Allergen Aware': { type: 'hide' },
+    Grill: { type: 'hide' },
+    Deli: { type: 'hide' },
+    'Sweets Lunch': { type: 'show_all' },
+    Special: { type: 'hide' },
+  },
+  'Verney-Woolley': {
+    'Breakfast Comforts': { type: 'hide' },
+    'Breakfast Sides': { type: 'hide' },
+    'Sweets Breakfast': { type: 'show_all' },
+    'Oatmeal Bar': { type: 'hide' },
+    'Omelet Bar': { type: 'summary_only', keepItems: ['VW Omelet Bar'] },
+    'Yogurt Bar - Served 7:30-10:30 am': { type: 'summary_only', keepItems: ['Breakfast - Yogurt Bar'] },
+    Waffles: { type: 'summary_only', keepItems: ['VW - Belgium Waffles'] },
+    'Condiment Station': { type: 'hide' },
+    'French Toast Bar': { type: 'summary_only', keepItems: ['French Toast'] },
+    'Salad Bar': { type: 'summary_only', keepItems: ['VW - From The Garden'] },
+    'Lunch Comforts': { type: 'show_all' },
+    'Lunch Sides': { type: 'show_all' },
+    Grill: { type: 'hide' },
+    Deli: { type: 'hide' },
+    'Sweets Lunch': { type: 'show_all' },
+    'Action Station': { type: 'summary_only', predicate: vwActionStationPredicate },
+    Pastry: { type: 'summary_only', keepItems: ['VW-Ice Cream Bar'] },
+    Accompaniments: { type: 'hide' },
+    Special: { type: 'hide' },
+  },
+};
+
+const hallRuleAliases: Record<string, string> = {
+  Andrews: 'Andrews',
+  'Andrews Commons': 'Andrews',
+  Blueroom: 'Blueroom',
+  'Blue Room': 'Blueroom',
+  'Blue Room Cafe': 'Blueroom',
+  'Ivy Room': 'Ivy Room',
+  "Josiah's": "Josiah's",
+  Josiahs: "Josiah's",
+  'School of Engineering': 'School of Engineering',
+  'Sharpe Refectory': 'Sharpe Refectory',
+  'Verney-Woolley': 'Verney-Woolley',
+  'Verney Woolley': 'Verney-Woolley',
+};
+
+const defaultStationRule: StationDisplayRule = { type: 'show_all' };
+
+const getStationRule = (hallName: string, stationName: string): StationDisplayRule => {
+  const hallKey = hallRuleAliases[hallName.trim()] ?? hallName.trim();
+  const hallRules = hallDisplayRules[hallKey];
+  if (!hallRules) return defaultStationRule;
+  return hallRules[stationName] ?? hallRules['*'] ?? defaultStationRule;
+};
+
+const applySummaryOnlyRule = (items: MenuItem[], rule: StationDisplayRule): MenuItem[] =>
+  items.filter((item) => {
+    const keepMatched = (rule.keepItems ?? []).some((name) => itemMatchesExactName(item, name));
+    const predicateMatched = rule.predicate ? rule.predicate(item) : false;
+    return keepMatched || predicateMatched;
+  });
+
+const applyFilteredShowAllRule = (items: MenuItem[], rule: StationDisplayRule): MenuItem[] =>
+  items.filter((item) => !(rule.excludeItems ?? []).some((name) => itemMatchesExactName(item, name)));
+
+type StationRenderSection =
+  | {
+      kind: 'items';
+      key: string;
+      hallName: string;
+      stationName: string;
+      items: MenuItem[];
+    }
+  | {
+      kind: 'custom_station';
+      key: string;
+      hallName: string;
+      stationName: string;
+      rawItems: MenuItem[];
+    };
+
+const buildStationSections = (items: MenuItem[]): StationRenderSection[] => {
+  const grouped = new Map<string, { hallName: string; stationName: string; items: MenuItem[] }>();
+
+  for (const item of items) {
+    const hallName = getHallDisplayLabel(item);
+    const stationName = getStationDisplayLabel(item);
+    const key = `${hallName}:::${stationName}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.items.push(item);
+    } else {
+      grouped.set(key, { hallName, stationName, items: [item] });
+    }
+  }
+
+  const sections: StationRenderSection[] = [];
+
+  for (const group of grouped.values()) {
+    const rule = getStationRule(group.hallName, group.stationName);
+
+    if (rule.type === 'hide') {
+      continue;
+    }
+
+    if (rule.type === 'custom_station') {
+      sections.push({
+        kind: 'custom_station',
+        key: `${group.hallName}:::${group.stationName}`,
+        hallName: group.hallName,
+        stationName: group.stationName,
+        rawItems: group.items,
+      });
+      continue;
+    }
+
+    let stationItems = group.items;
+    if (rule.type === 'summary_only') {
+      stationItems = applySummaryOnlyRule(group.items, rule);
+    } else if (rule.type === 'filtered_show_all') {
+      stationItems = applyFilteredShowAllRule(group.items, rule);
+    }
+
+    if (stationItems.length === 0) {
+      continue;
+    }
+
+    sections.push({
+      kind: 'items',
+      key: `${group.hallName}:::${group.stationName}`,
+      hallName: group.hallName,
+      stationName: group.stationName,
+      items: stationItems,
+    });
+  }
+
+  return sections;
+};
 
 const toMenuItem = (item: BackendMenuItem): MenuItem => ({
   id: item.id,
@@ -327,6 +502,7 @@ const toMenuItem = (item: BackendMenuItem): MenuItem => ({
   allergens: (item.allergens ?? []).filter(isAllergenTag),
   hallId: item.hall_id,
   externalLocationName: item.external_location_name ?? null,
+  stationName: item.station_name ?? null,
   mealSlot: item.meal_slot,
 });
 
@@ -467,6 +643,31 @@ const MenuItemCard = ({
   );
 };
 
+// Placeholder card for configurable stations (e.g., bowl/salad/yogurt builders).
+// Future work: expand to interactive selection and nutrition aggregation from `rawItems`.
+const CustomStationCard = ({
+  stationName,
+  rawCount,
+}: {
+  stationName: string;
+  rawCount: number;
+}) => (
+  <div className="bg-white rounded-2xl shadow-sm border border-dashed border-indigo-200/70 p-4 mb-3">
+    <div className="flex items-center justify-between mb-1.5">
+      <h3 className="font-semibold text-gray-900">{stationName}</h3>
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-indigo-600 bg-indigo-50 px-2 py-1 rounded-full">
+        Customizable
+      </span>
+    </div>
+    <p className="text-sm text-gray-600 leading-relaxed">
+      This station is customizable. Ingredient-level builder UX will be added in a future release.
+    </p>
+    <p className="mt-2 text-[11px] text-gray-400">
+      {rawCount} raw options available
+    </p>
+  </div>
+);
+
 
 export default function App() {
   // Global State
@@ -560,11 +761,10 @@ export default function App() {
         }
 
         const normalizedItems = payload.items.map(toMenuItem);
-        const displayItems = normalizedItems.filter(shouldDisplayMainDish);
         if (cancelled) return;
 
-        setMenuItems(displayItems);
-        setFavorites((prev) => prev.filter((id) => displayItems.some((item) => item.id === id)));
+        setMenuItems(normalizedItems);
+        setFavorites((prev) => prev.filter((id) => normalizedItems.some((item) => item.id === id)));
       } catch (error) {
         console.error('Failed to fetch menus:', error);
         if (cancelled) return;
@@ -675,6 +875,11 @@ export default function App() {
     if (selectedLocation !== 'all') {
       currentItems = currentItems.filter(item => getHallDisplayLabel(item) === selectedLocation);
     }
+
+    const stationSections = buildStationSections(currentItems);
+    const renderedCount = stationSections.reduce((count, section) => (
+      count + (section.kind === 'items' ? section.items.length : 1)
+    ), 0);
     
     return (
       <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -734,7 +939,7 @@ export default function App() {
         {isSearching && (
           <div className="py-3 mb-2 flex items-center justify-between">
             <h2 className="text-sm font-bold text-gray-500">{t.searchResults}</h2>
-            <span className="text-xs text-gray-400">{currentItems.length} results</span>
+            <span className="text-xs text-gray-400">{renderedCount} results</span>
           </div>
         )}
 
@@ -757,14 +962,31 @@ export default function App() {
             </div>
           )}
 
-          {!isMenuLoading && !menuLoadError && currentItems.map((item) => (
-            <MenuItemCard
-              key={item.id}
-              item={item}
-              lang={lang}
-              isFav={favorites.includes(item.id)}
-              onToggleFav={toggleFavorite}
-            />
+          {!isMenuLoading && !menuLoadError && stationSections.map((section) => (
+            <div key={section.key} className="mb-1">
+              <div className="px-1 pb-1">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+                  {section.hallName}
+                </p>
+                <p className="text-xs font-semibold text-gray-600">{section.stationName}</p>
+              </div>
+              {section.kind === 'custom_station' ? (
+                <CustomStationCard
+                  stationName={section.stationName}
+                  rawCount={section.rawItems.length}
+                />
+              ) : (
+                section.items.map((item) => (
+                  <MenuItemCard
+                    key={item.id}
+                    item={item}
+                    lang={lang}
+                    isFav={favorites.includes(item.id)}
+                    onToggleFav={toggleFavorite}
+                  />
+                ))
+              )}
+            </div>
           ))}
 
           {!isMenuLoading && menuLoadError && (
@@ -774,7 +996,7 @@ export default function App() {
             </div>
           )}
 
-          {!isMenuLoading && !menuLoadError && currentItems.length === 0 && (
+          {!isMenuLoading && !menuLoadError && stationSections.length === 0 && (
             <div className="py-12 text-center text-gray-400 flex flex-col items-center gap-2">
               <Info className="w-8 h-8 opacity-20" />
               <p className="text-sm font-medium">{t.emptyMenu}</p>
