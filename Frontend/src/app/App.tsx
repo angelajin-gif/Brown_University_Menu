@@ -89,7 +89,8 @@ const translations = {
     chatTitle: "AI Nutrition Assistant",
     chatPlaceholder: "E.g., I want something light and seafood...",
     chatEmptyMsg: "How can I help you adjust your diet today?",
-    chatRecPrefix: "I found this matching your request:"
+    chatRecPrefix: "I found this matching your request:",
+    nutritionUnavailable: "Nutrition unavailable",
   },
   zh: {
     home: "首页",
@@ -152,7 +153,8 @@ const translations = {
     chatTitle: "AI 营养助手",
     chatPlaceholder: "例如：想吃点清淡少油腻的海鲜...",
     chatEmptyMsg: "今天想吃点什么？我可以为你个性化推荐。",
-    chatRecPrefix: "为你找到符合要求的菜品："
+    chatRecPrefix: "为你找到符合要求的菜品：",
+    nutritionUnavailable: "营养信息暂不可用",
   }
 };
 
@@ -174,6 +176,7 @@ type MenuItem = {
   name: { en: string; zh: string };
   calories: number;
   macros: Macronutrients;
+  nutritionAvailable: boolean;
   tags: DietaryTag[];
   allergens: AllergenTag[];
   hallId: HallId;
@@ -188,6 +191,7 @@ type BackendMenuItem = {
   name_zh: string;
   calories: number;
   macros: Macronutrients;
+  nutrition_available?: boolean | null;
   tags: string[];
   allergens: string[];
   hall_id: HallId;
@@ -721,6 +725,13 @@ const toMenuItem = (item: BackendMenuItem): MenuItem => ({
     carbs: Number(item.macros?.carbs ?? 0),
     fat: Number(item.macros?.fat ?? 0),
   },
+  nutritionAvailable:
+    typeof item.nutrition_available === 'boolean'
+      ? item.nutrition_available
+      : Number(item.calories ?? 0) > 0 ||
+        Number(item.macros?.protein ?? 0) > 0 ||
+        Number(item.macros?.carbs ?? 0) > 0 ||
+        Number(item.macros?.fat ?? 0) > 0,
   tags: (item.tags ?? []).filter(isDietaryTag),
   allergens: (item.allergens ?? []).filter(isAllergenTag),
   hallId: item.hall_id,
@@ -814,6 +825,7 @@ const MenuItemCard = ({
   compact?: boolean;
 }) => {
   const t = translations[lang];
+  const showNutrition = item.nutritionAvailable;
 
   return (
     <div className={cn(
@@ -836,18 +848,29 @@ const MenuItemCard = ({
           </div>
         </div>
         <div className="flex flex-col items-end shrink-0">
-          <span className={cn("font-black text-gray-900 tracking-tight", compact ? "text-base" : "text-lg")}>{item.calories}</span>
-          <span className="text-[9px] text-gray-400 font-medium">kcal</span>
+          {showNutrition ? (
+            <>
+              <span className={cn("font-black text-gray-900 tracking-tight", compact ? "text-base" : "text-lg")}>{item.calories}</span>
+              <span className="text-[9px] text-gray-400 font-medium">kcal</span>
+            </>
+          ) : (
+            <span className="text-[10px] text-gray-400 font-medium text-right">{t.nutritionUnavailable}</span>
+          )}
         </div>
       </div>
 
       <div className={cn("mt-3 pt-3 border-t border-gray-50 flex items-end justify-between gap-4", compact && "mt-2 pt-2")}>
-        {/* Macros */}
-        <div className="flex-1 grid grid-cols-3 gap-2">
-          <MacroBar label={t.protein} value={item.macros.protein} colorClass="bg-blue-400" max={50} />
-          <MacroBar label={t.carbs} value={item.macros.carbs} colorClass="bg-amber-400" max={100} />
-          <MacroBar label={t.fat} value={item.macros.fat} colorClass="bg-red-400" max={50} />
-        </div>
+        {showNutrition ? (
+          <div className="flex-1 grid grid-cols-3 gap-2">
+            <MacroBar label={t.protein} value={item.macros.protein} colorClass="bg-blue-400" max={50} />
+            <MacroBar label={t.carbs} value={item.macros.carbs} colorClass="bg-amber-400" max={100} />
+            <MacroBar label={t.fat} value={item.macros.fat} colorClass="bg-red-400" max={50} />
+          </div>
+        ) : (
+          <div className="flex-1">
+            <p className="text-[11px] text-gray-400 font-medium">{t.nutritionUnavailable}</p>
+          </div>
+        )}
 
         {/* Actions - Only Favorite remaining */}
         <div className="flex items-center gap-1 shrink-0 pl-2">
