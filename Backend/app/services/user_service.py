@@ -67,3 +67,12 @@ class UserService:
             raise ValueError(f"Unknown menu_item_ids: {', '.join(unknown_ids)}")
 
         return await self._user_repo.replace_favorites(user_id, menu_item_ids)
+
+    async def add_favorite(self, user_id: str, menu_item_id: str) -> FavoritesResponse:
+        existing_item = await self._menu_repo.get_menu_item(menu_item_id)
+        if existing_item is None:
+            raise ValueError(f"Unknown menu_item_id: {menu_item_id}")
+        return await self._user_repo.add_favorite(user_id, menu_item_id)
+
+    async def remove_favorite(self, user_id: str, menu_item_id: str) -> FavoritesResponse:
+        return await self._user_repo.remove_favorite(user_id, menu_item_id)

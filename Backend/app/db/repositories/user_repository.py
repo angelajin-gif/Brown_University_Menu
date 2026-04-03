@@ -173,3 +173,22 @@ class UserRepository:
                     )
 
         return await self.get_favorites(user_id)
+
+    async def add_favorite(self, user_id: str, menu_item_id: str) -> FavoritesResponse:
+        await self.ensure_user(user_id)
+        sql = """
+            INSERT INTO user_favorites (user_id, menu_item_id)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id, menu_item_id) DO NOTHING;
+        """
+        await self._db.execute(sql, user_id, menu_item_id)
+        return await self.get_favorites(user_id)
+
+    async def remove_favorite(self, user_id: str, menu_item_id: str) -> FavoritesResponse:
+        await self.ensure_user(user_id)
+        sql = """
+            DELETE FROM user_favorites
+            WHERE user_id = $1 AND menu_item_id = $2;
+        """
+        await self._db.execute(sql, user_id, menu_item_id)
+        return await self.get_favorites(user_id)

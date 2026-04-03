@@ -7,6 +7,8 @@ from app.db.postgres import Database
 from app.db.repositories.menu_repository import MenuRepository
 from app.db.repositories.rag_repository import RagRepository
 from app.db.repositories.user_repository import UserRepository
+from app.services.chat_service import ChatService
+from app.services.custom_station_service import CustomStationService
 from app.services.embedding_service import EmbeddingService
 from app.services.insight_service import InsightService
 from app.services.menu_service import MenuService
@@ -28,3 +30,5 @@ class AppContainer:
     menu_service: MenuService
     user_service: UserService
     insight_service: InsightService
+    chat_service: ChatService
+    custom_station_service: CustomStationService

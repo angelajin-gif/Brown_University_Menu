@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+
+try:
+    from openai import AsyncOpenAI
+except ModuleNotFoundError:  # pragma: no cover - optional dependency until environment syncs.
+    AsyncOpenAI = None  # type: ignore[assignment]
 
 from app.core.config import Settings
 
@@ -20,9 +26,25 @@ class OpenRouterService:
             base_url=settings.openrouter_base_url.rstrip("/"),
             timeout=settings.openrouter_timeout_seconds,
         )
+        sdk_headers: dict[str, str] = {}
+        if settings.openrouter_http_referer:
+            sdk_headers["HTTP-Referer"] = settings.openrouter_http_referer
+        if settings.openrouter_title:
+            sdk_headers["X-Title"] = settings.openrouter_title
+
+        self._sdk_client: AsyncOpenAI | None = None
+        if AsyncOpenAI is not None:
+            self._sdk_client = AsyncOpenAI(
+                api_key=settings.openrouter_api_key or "missing-api-key",
+                base_url=settings.openrouter_base_url.rstrip("/"),
+                timeout=settings.openrouter_timeout_seconds,
+                default_headers=sdk_headers or None,
+            )
 
     async def close(self) -> None:
         await self._client.aclose()
+        if self._sdk_client is not None:
+            await self._sdk_client.close()
 
     def _headers(self) -> dict[str, str]:
         if not self._settings.openrouter_api_key:
@@ -109,6 +131,58 @@ class OpenRouterService:
             raise OpenRouterError("Chat response missing text content.")
 
         return content.strip()
+
+    async def stream_chat_completion(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.2,
+        max_tokens: int = 900,
+    ) -> AsyncIterator[str]:
+        if not self._settings.openrouter_api_key:
+            raise OpenRouterError("OPENROUTER_API_KEY is missing.")
+        if self._sdk_client is None:
+            raise OpenRouterError("openai package is required for streaming chat.")
+
+        try:
+            stream = await self._sdk_client.chat.completions.create(
+                model=self._settings.openrouter_chat_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+            )
+        except Exception as error:  # noqa: BLE001 - SDK exceptions vary by transport/provider.
+            raise OpenRouterError(f"Streaming chat request failed: {error}") from error
+
+        async for chunk in stream:
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+
+            delta = getattr(choices[0], "delta", None)
+            if delta is None:
+                continue
+
+            content = getattr(delta, "content", None)
+            if isinstance(content, str):
+                if content:
+                    yield content
+                continue
+
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get("type") == "text" and part.get("text"):
+                            yield str(part["text"])
+                        continue
+
+                    text = getattr(part, "text", None)
+                    if isinstance(text, str) and text:
+                        yield text
 
     async def create_structured_chat_completion(
         self,

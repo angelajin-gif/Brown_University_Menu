@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import date
 
 from app.db.postgres import Database
+from app.models.custom_station import CustomStationComponent
 from app.models.enums import AllergenTag, DietaryTag, HallId, MealSlot
 from app.models.menu import Macronutrients, MenuItem
 
@@ -231,3 +232,50 @@ class MenuRepository:
             limit,
         )
         return [self._row_to_menu_item(dict(row)) for row in rows]
+
+    async def list_custom_station_components_by_ids(
+        self,
+        item_ids: Sequence[str],
+    ) -> list[CustomStationComponent]:
+        if not item_ids:
+            return []
+
+        sql = """
+            SELECT
+                id,
+                name_en,
+                name_zh,
+                calories,
+                protein,
+                carbs,
+                fat,
+                hall_id,
+                meal_slot,
+                station_name,
+                service_date,
+                item_type,
+                nutrition_available
+            FROM menu_items
+            WHERE is_active = TRUE
+              AND id = ANY($1::text[])
+            ORDER BY array_position($1::text[], id);
+        """
+        rows = await self._db.fetch(sql, list(item_ids))
+        return [
+            CustomStationComponent(
+                id=row["id"],
+                name_en=row["name_en"],
+                name_zh=row["name_zh"],
+                calories=float(row["calories"]),
+                protein=float(row["protein"]),
+                carbs=float(row["carbs"]),
+                fat=float(row["fat"]),
+                hall_id=HallId(row["hall_id"]),
+                meal_slot=MealSlot(row["meal_slot"]),
+                station_name=row.get("station_name"),
+                service_date=row.get("service_date"),
+                item_type=row.get("item_type"),
+                nutrition_available=bool(row.get("nutrition_available", False)),
+            )
+            for row in (dict(record) for record in rows)
+        ]

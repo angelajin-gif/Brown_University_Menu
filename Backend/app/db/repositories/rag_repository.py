@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import re
 import json
+import re
 from collections.abc import Sequence
+from datetime import date
+from typing import Any
 
 from app.db.postgres import Database
 from app.models.enums import SourceType
@@ -126,6 +128,41 @@ class RagRepository:
         """
         rows = await self._db.fetch(sql, patterns, top_k)
         return [self._row_to_chunk(dict(row)) for row in rows]
+
+    async def search_daily_menu_items_by_rpc(
+        self,
+        embedding: Sequence[float],
+        service_date: date,
+        top_k: int = 3,
+    ) -> list[dict[str, Any]]:
+        sql = """
+            SELECT
+                menu_item_id,
+                similarity,
+                name_en,
+                name_zh,
+                description,
+                calories,
+                protein,
+                carbs,
+                fat,
+                tags,
+                allergens,
+                hall_id,
+                meal_slot,
+                station_name,
+                meal_name,
+                nutrition_available,
+                nutrition_item_id
+            FROM match_daily_menu_items($1::vector, $2::date, $3::int);
+        """
+        rows = await self._db.fetch(
+            sql,
+            self._to_vector_literal(embedding),
+            service_date,
+            top_k,
+        )
+        return [dict(row) for row in rows]
 
     @staticmethod
     def _extract_tokens(query: str) -> list[str]:

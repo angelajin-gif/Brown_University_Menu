@@ -113,3 +113,60 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding
 ON knowledge_chunks
 USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
+
+-- RPC for menu-item semantic retrieval constrained to a service date.
+CREATE OR REPLACE FUNCTION match_daily_menu_items(
+    query_embedding VECTOR(1536),
+    target_service_date DATE,
+    match_count INTEGER DEFAULT 3
+)
+RETURNS TABLE (
+    menu_item_id TEXT,
+    similarity DOUBLE PRECISION,
+    name_en TEXT,
+    name_zh TEXT,
+    description TEXT,
+    calories INTEGER,
+    protein NUMERIC,
+    carbs NUMERIC,
+    fat NUMERIC,
+    tags TEXT[],
+    allergens TEXT[],
+    hall_id TEXT,
+    meal_slot TEXT,
+    station_name TEXT,
+    meal_name TEXT,
+    nutrition_available BOOLEAN,
+    nutrition_item_id TEXT
+)
+LANGUAGE SQL
+STABLE
+AS $$
+    SELECT
+        mi.id AS menu_item_id,
+        GREATEST(0, 1 - (kc.embedding <=> query_embedding)) AS similarity,
+        mi.name_en,
+        mi.name_zh,
+        mi.description,
+        mi.calories,
+        mi.protein,
+        mi.carbs,
+        mi.fat,
+        mi.tags,
+        mi.allergens,
+        mi.hall_id,
+        mi.meal_slot,
+        mi.station_name,
+        mi.meal_name,
+        mi.nutrition_available,
+        mi.nutrition_item_id
+    FROM knowledge_chunks AS kc
+    INNER JOIN menu_items AS mi
+        ON mi.id = kc.source_id
+    WHERE kc.source_type = 'menu'
+      AND kc.embedding IS NOT NULL
+      AND mi.is_active = TRUE
+      AND mi.service_date = target_service_date
+    ORDER BY kc.embedding <=> query_embedding
+    LIMIT GREATEST(1, match_count);
+$$;

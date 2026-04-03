@@ -45,6 +45,8 @@ ALLERGEN_TO_TAG = {
 
 HALL1_LOCATION_IDS = {"AC", "SHRP", "VW"}
 FIXED_DISH_ITEM_TYPE = "recipe"
+CUSTOM_COMPONENT_ITEM_TYPE = "ingredient"
+NUTRITION_ELIGIBLE_ITEM_TYPES = {FIXED_DISH_ITEM_TYPE, CUSTOM_COMPONENT_ITEM_TYPE}
 
 
 class BrownMenuSyncService:
@@ -63,7 +65,9 @@ class BrownMenuSyncService:
 
         service_date = self._service_date_today()
         records = self._transform_to_menu_upserts(locations, service_date)
-        nutrition_candidates = sum(1 for record in records if self._is_fixed_dish_record(record))
+        nutrition_candidates = sum(
+            1 for record in records if self._is_nutrition_eligible_record(record)
+        )
 
         nutrition_enriched = 0
         if self._settings.menu_sync_enrich_nutrition:
@@ -212,39 +216,51 @@ class BrownMenuSyncService:
     def _is_fixed_dish_record(record: dict[str, Any]) -> bool:
         return str(record.get("item_type", "")).strip().lower() == FIXED_DISH_ITEM_TYPE
 
+    @staticmethod
+    def _is_nutrition_eligible_record(record: dict[str, Any]) -> bool:
+        item_type = str(record.get("item_type", "")).strip().lower()
+        return item_type in NUTRITION_ELIGIBLE_ITEM_TYPES
+
     async def _enrich_records_with_nutrition(self, records: list[dict[str, Any]]) -> int:
-        recipe_item_ids = sorted(
+        nutrition_keys = sorted(
             {
-                str(record.get("nutrition_item_id", "")).strip()
+                (
+                    str(record.get("nutrition_item_id", "")).strip(),
+                    str(record.get("item_type", "")).strip().lower(),
+                )
                 for record in records
-                if self._is_fixed_dish_record(record) and record.get("nutrition_item_id")
+                if self._is_nutrition_eligible_record(record)
+                and str(record.get("nutrition_item_id", "")).strip()
             }
         )
-        if not recipe_item_ids:
+        if not nutrition_keys:
             return 0
 
         semaphore = asyncio.Semaphore(max(1, self._settings.menu_sync_nutrition_concurrency))
-        nutrition_by_item_id: dict[str, dict[str, float | int]] = {}
+        nutrition_by_key: dict[tuple[str, str], dict[str, float | int]] = {}
 
-        async def fetch_and_store(item_id: str) -> None:
+        async def fetch_and_store(item_id: str, item_type: str) -> None:
             async with semaphore:
-                nutrition = await self._fetch_recipe_nutrition(item_id)
+                nutrition = await self._fetch_item_nutrition(item_id, item_type)
                 if nutrition is not None:
-                    nutrition_by_item_id[item_id] = nutrition
+                    nutrition_by_key[(item_id, item_type)] = nutrition
 
-        await asyncio.gather(*(fetch_and_store(item_id) for item_id in recipe_item_ids))
+        await asyncio.gather(
+            *(fetch_and_store(item_id, item_type) for item_id, item_type in nutrition_keys)
+        )
 
         nutrition_synced_at = datetime.utcnow().isoformat()
         enriched_count = 0
         for record in records:
             record["nutrition_synced_at"] = nutrition_synced_at
 
-            if not self._is_fixed_dish_record(record):
+            if not self._is_nutrition_eligible_record(record):
                 record["nutrition_available"] = False
                 continue
 
             nutrition_item_id = str(record.get("nutrition_item_id", "")).strip()
-            nutrition = nutrition_by_item_id.get(nutrition_item_id)
+            item_type = str(record.get("item_type", "")).strip().lower()
+            nutrition = nutrition_by_key.get((nutrition_item_id, item_type))
             if nutrition is None:
                 record["nutrition_available"] = False
                 continue
@@ -258,11 +274,15 @@ class BrownMenuSyncService:
 
         return enriched_count
 
-    async def _fetch_recipe_nutrition(self, item_id: str) -> dict[str, float | int] | None:
+    async def _fetch_item_nutrition(
+        self,
+        item_id: str,
+        item_type: str,
+    ) -> dict[str, float | int] | None:
         try:
             response = await self._http.get(
                 self._settings.brown_nutrition_api_url,
-                params={"id": item_id, "type": FIXED_DISH_ITEM_TYPE},
+                params={"id": item_id, "type": item_type},
             )
         except httpx.HTTPError:
             return None
