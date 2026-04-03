@@ -797,7 +797,7 @@ const AllergenBadge = ({ allergen, lang }: { allergen: AllergenTag; lang: Lang }
 };
 
 const MACRO_BAR_MAX = {
-  protein: 30,
+  protein: 12,
   carbs: 40,
   fat: 20,
 } as const;

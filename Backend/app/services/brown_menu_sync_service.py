@@ -372,6 +372,7 @@ class BrownMenuSyncService:
         if not records:
             return
 
+        records = self._dedupe_records_by_id(records)
         batch_size = max(1, self._settings.menu_sync_batch_size)
         for index in range(0, len(records), batch_size):
             chunk = records[index : index + batch_size]
@@ -379,3 +380,23 @@ class BrownMenuSyncService:
 
     def _upsert_chunk(self, records: list[dict]) -> None:
         self._supabase.table("menu_items").upsert(records, on_conflict="id").execute()
+
+    @staticmethod
+    def _dedupe_records_by_id(records: list[dict]) -> list[dict]:
+        before_count = len(records)
+        deduped_by_id: dict[str, dict] = {}
+
+        for record in records:
+            record_id = str(record.get("id", ""))
+            if record_id in deduped_by_id:
+                deduped_by_id.pop(record_id)
+            deduped_by_id[record_id] = record
+
+        deduped_records = list(deduped_by_id.values())
+        after_count = len(deduped_records)
+        removed_count = before_count - after_count
+        print(
+            f"[brown-menu-sync] dedupe records before={before_count} "
+            f"after={after_count} removed={removed_count}"
+        )
+        return deduped_records
