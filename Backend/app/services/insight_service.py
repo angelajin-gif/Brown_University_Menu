@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from app.db.repositories.menu_repository import MenuRepository
 from app.db.repositories.user_repository import UserRepository
 from app.models.insight import (
+    ChatConversationContext,
     ChatRecommendationRequest,
     ChatRecommendationResponse,
     DailyInsightRequest,
@@ -191,17 +192,59 @@ class InsightService:
             ranking_debug["ranked_candidates"],
             ranking_debug["top_ranked"],
         )
+        interpreted_intent = self._detect_follow_up_intent(payload.message)
+        is_follow_up_refinement = self._is_follow_up_refinement(
+            interpreted_intent=interpreted_intent,
+            context=payload.conversation_context,
+        )
 
         if not menu_candidates:
             logger.info(
                 "chat_reco_debug user_id=%s stage=result no_match=true reason=no_safe_meal_like_candidates",
                 payload.user_id,
             )
-            return self._build_chat_no_match_response(payload.lang)
+            return self._attach_chat_context(
+                response=self._build_chat_no_match_response(payload.lang),
+                menu_candidates=[],
+                recommended_item_id=None,
+                interpreted_intent=interpreted_intent,
+            )
+
+        if is_follow_up_refinement:
+            logger.info(
+                "chat_reco_debug user_id=%s stage=follow_up intent=%s previous_recommended=%s",
+                payload.user_id,
+                interpreted_intent,
+                payload.conversation_context.last_recommended_item_id
+                if payload.conversation_context
+                else None,
+            )
+            follow_up_response, recommended_item_id = self._build_follow_up_refinement_response(
+                lang=payload.lang,
+                intent=interpreted_intent,
+                menu_candidates=menu_candidates,
+                previous_recommended_item_id=payload.conversation_context.last_recommended_item_id
+                if payload.conversation_context
+                else None,
+                previous_ranked_candidate_ids=payload.conversation_context.last_ranked_candidate_ids
+                if payload.conversation_context
+                else None,
+            )
+            return self._attach_chat_context(
+                response=follow_up_response,
+                menu_candidates=menu_candidates,
+                recommended_item_id=recommended_item_id,
+                interpreted_intent=interpreted_intent,
+            )
 
         # Deterministic graceful fallback when query does not have a strong meal-like match.
         if top_score < 18:
-            return self._build_chat_soft_match_response(payload.lang, menu_candidates[0])
+            return self._attach_chat_context(
+                response=self._build_chat_soft_match_response(payload.lang, menu_candidates[0]),
+                menu_candidates=menu_candidates,
+                recommended_item_id=menu_candidates[0].id,
+                interpreted_intent=interpreted_intent,
+            )
 
         try:
             chunks = await self._rag_service.hybrid_search(payload.message)
@@ -231,14 +274,19 @@ class InsightService:
 
             citations = [f"{chunk.source_type.value}:{chunk.source_id}" for chunk in chunks]
 
-            return validated.model_copy(
-                update={
-                    "recommended_dish_ids": filtered_recommended_ids,
-                    "avoid_dish_ids": [
-                        item_id for item_id in validated.avoid_dish_ids if item_id in allowed_ids
-                    ],
-                    "citations": citations[:5] if not validated.citations else validated.citations[:5],
-                }
+            return self._attach_chat_context(
+                response=validated.model_copy(
+                    update={
+                        "recommended_dish_ids": filtered_recommended_ids,
+                        "avoid_dish_ids": [
+                            item_id for item_id in validated.avoid_dish_ids if item_id in allowed_ids
+                        ],
+                        "citations": citations[:5] if not validated.citations else validated.citations[:5],
+                    }
+                ),
+                menu_candidates=menu_candidates,
+                recommended_item_id=filtered_recommended_ids[0] if filtered_recommended_ids else None,
+                interpreted_intent=interpreted_intent,
             )
         except (OpenRouterError, ValidationError) as error:
             logger.warning(
@@ -246,11 +294,16 @@ class InsightService:
                 payload.user_id,
                 error,
             )
-            return self._build_chat_model_fallback_response(
-                lang=payload.lang,
-                item=menu_candidates[0],
-                preferences=preferences,
-                is_favorite=menu_candidates[0].id in favorite_ids,
+            return self._attach_chat_context(
+                response=self._build_chat_model_fallback_response(
+                    lang=payload.lang,
+                    item=menu_candidates[0],
+                    preferences=preferences,
+                    is_favorite=menu_candidates[0].id in favorite_ids,
+                ),
+                menu_candidates=menu_candidates,
+                recommended_item_id=menu_candidates[0].id,
+                interpreted_intent=interpreted_intent,
             )
 
     async def _get_menu_candidates(
@@ -554,6 +607,175 @@ class InsightService:
 
         # Heuristic: keep substantial items even without explicit meal keywords.
         return item.calories >= 180 or item.macros.protein >= 10
+
+    @staticmethod
+    def _attach_chat_context(
+        response: ChatRecommendationResponse,
+        menu_candidates: list[MenuItem],
+        recommended_item_id: str | None,
+        interpreted_intent: str,
+    ) -> ChatRecommendationResponse:
+        return response.model_copy(
+            update={
+                "conversation_context": ChatConversationContext(
+                    last_recommended_item_id=recommended_item_id,
+                    last_ranked_candidate_ids=[item.id for item in menu_candidates[:8]],
+                    last_interpreted_intent=interpreted_intent,
+                )
+            }
+        )
+
+    @staticmethod
+    def _detect_follow_up_intent(message: str) -> str:
+        text = message.lower()
+        intent_keywords: list[tuple[str, list[str]]] = [
+            ("lighter", ["lighter", "light", "less heavy", "低卡", "清淡", "轻食", "更轻"]),
+            ("more_filling", ["more filling", "filling", "heavier", "substantial", "更饱", "管饱", "更顶饱"]),
+            ("less_greasy", ["less greasy", "not greasy", "less oil", "少油", "不油", "清爽"]),
+            ("warmer", ["warmer", "warm", "hot", "soup", "更热", "暖一点", "热汤"]),
+            ("vegetarian", ["vegetarian", "vegan", "plant-based", "素食", "吃素", "全素"]),
+            ("higher_protein", ["higher protein", "more protein", "protein", "高蛋白", "增肌"]),
+            ("seafood", ["seafood", "fish", "salmon", "shrimp", "海鲜", "鱼", "三文鱼", "虾"]),
+        ]
+        for intent, keywords in intent_keywords:
+            if any(keyword in text for keyword in keywords):
+                return intent
+        return "general"
+
+    @staticmethod
+    def _is_follow_up_refinement(
+        interpreted_intent: str,
+        context: ChatConversationContext | None,
+    ) -> bool:
+        if interpreted_intent == "general" or context is None:
+            return False
+        return bool(context.last_recommended_item_id or context.last_ranked_candidate_ids)
+
+    @staticmethod
+    def _item_name_for_lang(item: MenuItem, lang: str) -> str:
+        return item.name_zh if lang == "zh" and item.name_zh else item.name_en
+
+    @staticmethod
+    def _score_for_follow_up_intent(intent: str, item: MenuItem) -> float:
+        name_text = f"{item.name_en} {item.name_zh} {item.station_name or ''}".lower()
+        tag_values = {tag.value for tag in item.tags}
+        allergen_values = {tag.value for tag in item.allergens}
+        warm_tokens = ["soup", "stew", "ramen", "curry", "hot", "汤", "热", "暖"]
+        is_warm = any(token in name_text for token in warm_tokens)
+        is_vegetarian = "vegetarian" in tag_values or "vegan" in tag_values
+        is_seafood = (
+            "fish" in allergen_values
+            or "shellfish" in allergen_values
+            or any(token in name_text for token in ["fish", "salmon", "shrimp", "seafood", "鱼", "虾", "海鲜"])
+        )
+
+        if intent == "lighter":
+            return -(
+                float(item.calories)
+                + float(item.macros.fat) * 30.0
+                + float(item.macros.carbs) * 2.0
+            )
+        if intent == "more_filling":
+            return (
+                float(item.calories)
+                + float(item.macros.protein) * 6.0
+                + float(item.macros.carbs) * 3.0
+                + float(item.macros.fat) * 2.0
+            )
+        if intent == "less_greasy":
+            return -(float(item.macros.fat) * 35.0 + float(item.calories) * 0.2)
+        if intent == "warmer":
+            return 100.0 if is_warm else 0.0
+        if intent == "vegetarian":
+            return 100.0 if is_vegetarian else -50.0
+        if intent == "higher_protein":
+            return (
+                float(item.macros.protein) * 10.0
+                + (40.0 if "high-protein" in tag_values else 0.0)
+                - float(item.calories) * 0.1
+            )
+        if intent == "seafood":
+            return 100.0 if is_seafood else -50.0
+        return 0.0
+
+    @staticmethod
+    def _build_follow_up_refinement_response(
+        lang: str,
+        intent: str,
+        menu_candidates: list[MenuItem],
+        previous_recommended_item_id: str | None,
+        previous_ranked_candidate_ids: list[str] | None = None,
+    ) -> tuple[ChatRecommendationResponse, str]:
+        comparison_pool = menu_candidates
+        if previous_ranked_candidate_ids:
+            by_id = {item.id: item for item in menu_candidates}
+            contextual_pool = [
+                by_id[item_id]
+                for item_id in previous_ranked_candidate_ids
+                if item_id in by_id
+            ]
+            if contextual_pool:
+                comparison_pool = contextual_pool
+
+        previous_item = next(
+            (item for item in comparison_pool if item.id == previous_recommended_item_id),
+            comparison_pool[0],
+        )
+        best_item = max(
+            comparison_pool,
+            key=lambda item: InsightService._score_for_follow_up_intent(intent, item),
+        )
+
+        previous_score = InsightService._score_for_follow_up_intent(intent, previous_item)
+        best_score = InsightService._score_for_follow_up_intent(intent, best_item)
+        is_meaningfully_better = best_item.id != previous_item.id and best_score > previous_score + 0.5
+        chosen = best_item if is_meaningfully_better else previous_item
+
+        chosen_name = InsightService._item_name_for_lang(chosen, lang)
+        previous_name = InsightService._item_name_for_lang(previous_item, lang)
+        intent_labels = {
+            "lighter": ("更轻一点", "lighter"),
+            "more_filling": ("更有饱腹感", "more filling"),
+            "less_greasy": ("更少油", "less greasy"),
+            "warmer": ("更暖一点", "warmer"),
+            "vegetarian": ("改成素食", "vegetarian instead"),
+            "higher_protein": ("更高蛋白", "higher protein"),
+            "seafood": ("改成海鲜", "seafood instead"),
+        }
+        zh_label, en_label = intent_labels.get(intent, ("再细化一下", "refine this"))
+
+        if is_meaningfully_better:
+            if lang == "zh":
+                reply = (
+                    f"如果你想{zh_label}，我会把推荐从「{previous_name}」换成「{chosen_name}」。"
+                    f"它在这个方向上更合适。"
+                )
+            else:
+                reply = (
+                    f"If you want {en_label}, I'd switch from {previous_name} to {chosen_name}. "
+                    "It is a better fit for that direction."
+                )
+        else:
+            if lang == "zh":
+                reply = (
+                    f"如果你想{zh_label}，「{previous_name}」仍然是今天可见且安全候选里更合适的一项。"
+                    "当前没有明显更好的替代。"
+                )
+            else:
+                reply = (
+                    f"If you want {en_label}, {previous_name} is still the best fit among today's visible safe options. "
+                    "There isn't a clearly better alternative right now."
+                )
+
+        return (
+            ChatRecommendationResponse(
+                reply=reply,
+                recommended_dish_ids=[chosen.id],
+                avoid_dish_ids=[],
+                citations=[],
+            ),
+            chosen.id,
+        )
 
     @staticmethod
     def _build_chat_no_match_response(lang: str) -> ChatRecommendationResponse:

@@ -231,11 +231,18 @@ type BackendDailyInsightResponse = {
   confidence?: number;
 };
 
+type ChatConversationContext = {
+  last_recommended_item_id?: string | null;
+  last_ranked_candidate_ids?: string[];
+  last_interpreted_intent?: string | null;
+};
+
 type BackendChatRecommendationResponse = {
   reply: string;
   recommended_dish_ids?: string[];
   avoid_dish_ids?: string[];
   citations?: string[];
+  conversation_context?: ChatConversationContext | null;
 };
 
 type DailyInsightState = {
@@ -1143,6 +1150,7 @@ export default function App() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatConversationContext, setChatConversationContext] = useState<ChatConversationContext | null>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
 
   // Notification State
@@ -1810,6 +1818,11 @@ export default function App() {
   useEffect(() => {
     if (isChatOpen && chatMessages.length === 0) {
       // Initialize from the same daily insight result object used by the hero card.
+      setChatConversationContext({
+        last_recommended_item_id: dailyInsight?.recommendedDishId ?? null,
+        last_ranked_candidate_ids: dailyInsight?.recommendedDishId ? [dailyInsight.recommendedDishId] : [],
+        last_interpreted_intent: null,
+      });
       setChatMessages([
         {
           id: '1',
@@ -1863,6 +1876,7 @@ export default function App() {
           hall_id: selectedHallIdForInsight,
           lang,
           visible_item_ids: visibleChatCandidateIds,
+          conversation_context: chatConversationContext,
         }),
       });
 
@@ -1880,12 +1894,20 @@ export default function App() {
         query: userText,
         preferredMealSlot: mealTab,
       });
+      const hasBackendRecommendation = recommendedDishIds.length > 0;
+      setChatConversationContext(
+        payload.conversation_context ?? {
+          last_recommended_item_id: finalSelection.item?.id ?? recommendedDishIds[0] ?? null,
+          last_ranked_candidate_ids: recommendedDishIds,
+          last_interpreted_intent: null,
+        }
+      );
 
-      const text = finalSelection.strongMatch && payload.reply?.trim()
+      const text = (finalSelection.strongMatch || hasBackendRecommendation) && payload.reply?.trim()
         ? payload.reply.trim()
         : safeFallbackSummary(true);
 
-      appendAiMessage(text, finalSelection.item?.id);
+      appendAiMessage(text, finalSelection.item?.id ?? recommendedDishIds[0]);
     } catch (error) {
       console.error('Failed to fetch chat recommendation:', error);
       const fallbackSelection = selectFinalRecommendedItem({
@@ -1898,6 +1920,11 @@ export default function App() {
             ? '推荐服务暂时不可用，我先按今日菜单和你的偏好给出最接近的一项：'
             : "The recommendation service is temporarily unavailable, so here's the closest match from today's menu and your preferences:")
         : safeFallbackSummary(true);
+      setChatConversationContext((prev) => ({
+        last_recommended_item_id: fallbackSelection.item?.id ?? prev?.last_recommended_item_id ?? null,
+        last_ranked_candidate_ids: prev?.last_ranked_candidate_ids ?? [],
+        last_interpreted_intent: prev?.last_interpreted_intent ?? null,
+      }));
 
       appendAiMessage(text, fallbackSelection.item?.id);
     }
