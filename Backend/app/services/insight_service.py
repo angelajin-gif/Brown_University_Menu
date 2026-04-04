@@ -91,8 +91,17 @@ class InsightService:
         payload: ChatRecommendationRequest,
     ) -> ChatRecommendationResponse:
         preferences = await self._user_repo.get_preferences(payload.user_id)
+        requested_visible_ids_count = len(payload.visible_item_ids)
+        raw_candidates_total = 0
         if payload.visible_item_ids:
             raw_candidates = await self._menu_repo.list_menu_items_by_ids(payload.visible_item_ids)
+            raw_candidates_total = len(raw_candidates)
+            logger.info(
+                "chat_reco_debug user_id=%s stage=visible_restriction requested_visible_ids=%d candidates=%d",
+                payload.user_id,
+                requested_visible_ids_count,
+                raw_candidates_total,
+            )
             excluded_allergen_values = {tag.value for tag in preferences.allergen_tags}
             if excluded_allergen_values:
                 raw_candidates = [
@@ -100,6 +109,12 @@ class InsightService:
                     for item in raw_candidates
                     if not any(allergen.value in excluded_allergen_values for allergen in item.allergens)
                 ]
+            logger.info(
+                "chat_reco_debug user_id=%s stage=allergen_filter excluded=%s candidates=%d",
+                payload.user_id,
+                sorted(excluded_allergen_values),
+                len(raw_candidates),
+            )
         else:
             raw_candidates = await self._get_menu_candidates(
                 preferred_tags=preferences.pref_tags,
@@ -110,10 +125,22 @@ class InsightService:
                 service_date=None,
                 fallback_limit=8,
             )
+            raw_candidates_total = len(raw_candidates)
+            logger.info(
+                "chat_reco_debug user_id=%s stage=visible_restriction requested_visible_ids=0 candidates=%d",
+                payload.user_id,
+                raw_candidates_total,
+            )
+            logger.info(
+                "chat_reco_debug user_id=%s stage=allergen_filter excluded=%s candidates=%d source=menu_query",
+                payload.user_id,
+                sorted({tag.value for tag in preferences.allergen_tags}),
+                len(raw_candidates),
+            )
         favorites = await self._user_repo.get_favorites(payload.user_id)
         favorite_ids = set(favorites.menu_item_ids)
 
-        menu_candidates, top_score = self._build_ranked_chat_candidates(
+        menu_candidates, top_score, ranking_debug = self._build_ranked_chat_candidates(
             items=raw_candidates,
             message=payload.message,
             preferred_meal_slot=payload.meal_slot,
@@ -121,8 +148,30 @@ class InsightService:
             preferred_tag_values=[tag.value for tag in preferences.pref_tags],
             favorite_ids=favorite_ids,
         )
+        logger.info(
+            "chat_reco_debug user_id=%s stage=ranking total_raw_candidates=%d after_visible_restriction=%d "
+            "after_allergen_filter=%d after_meal_like_filter=%d after_latest_service_date=%d "
+            "latest_service_fallback_used=%s preference_ranking_pool=%d preference_signal_items=%d "
+            "favorites_in_pool=%d ranked_candidates=%d top_ranked=%s",
+            payload.user_id,
+            raw_candidates_total,
+            raw_candidates_total,
+            len(raw_candidates),
+            ranking_debug["after_meal_like_filter"],
+            ranking_debug["after_latest_service_date"],
+            ranking_debug["latest_service_fallback_used"],
+            ranking_debug["preference_ranking_pool"],
+            ranking_debug["preference_signal_items"],
+            ranking_debug["favorites_in_pool"],
+            ranking_debug["ranked_candidates"],
+            ranking_debug["top_ranked"],
+        )
 
         if not menu_candidates:
+            logger.info(
+                "chat_reco_debug user_id=%s stage=result no_match=true reason=no_safe_meal_like_candidates",
+                payload.user_id,
+            )
             return self._build_chat_no_match_response(payload.lang)
 
         # Deterministic graceful fallback when query does not have a strong meal-like match.
@@ -277,11 +326,28 @@ class InsightService:
         preferred_tag_values: list[str],
         favorite_ids: set[str],
         limit: int = 8,
-    ) -> tuple[list[MenuItem], int]:
-        same_day_items = InsightService._restrict_to_latest_service_date(items)
-        filtered_items = [item for item in same_day_items if InsightService._is_meal_like_item(item)]
-        if not filtered_items:
-            return [], 0
+    ) -> tuple[list[MenuItem], int, dict[str, object]]:
+        meal_like_items = [item for item in items if InsightService._is_meal_like_item(item)]
+        latest_service_items = InsightService._restrict_to_latest_service_date(meal_like_items)
+        latest_service_fallback_used = False
+        same_day_items = latest_service_items
+        if meal_like_items and not latest_service_items:
+            # Keep today's visible, safe, meal-like pool if date metadata is inconsistent.
+            same_day_items = meal_like_items
+            latest_service_fallback_used = True
+
+        debug: dict[str, object] = {
+            "after_meal_like_filter": len(meal_like_items),
+            "after_latest_service_date": len(latest_service_items),
+            "latest_service_fallback_used": latest_service_fallback_used,
+            "preference_ranking_pool": len(same_day_items),
+            "preference_signal_items": 0,
+            "favorites_in_pool": sum(1 for item in same_day_items if item.id in favorite_ids),
+            "ranked_candidates": 0,
+            "top_ranked": [],
+        }
+        if not same_day_items:
+            return [], 0, debug
 
         tokens = InsightService._extract_query_tokens(message)
         query_lower = message.lower()
@@ -302,43 +368,61 @@ class InsightService:
             for token in ["high protein", "protein", "增肌", "高蛋白", "健身"]
         )
 
-        ranked = []
-        for item in filtered_items:
+        ranked: list[tuple[int, MenuItem, int, bool]] = []
+        for item in same_day_items:
             text = (
                 f"{item.name_en} {item.name_zh} {item.station_name or ''} "
                 f"{item.external_location_name or ''} {item.meal_name or ''}"
             ).lower()
             score = 0
+            tag_values = [tag.value for tag in item.tags]
+            allergen_values = [tag.value for tag in item.allergens]
+            preference_match_count = sum(1 for tag in item.tags if tag.value in preferred_tag_values)
+            is_favorite = item.id in favorite_ids
 
-            if item.id in favorite_ids:
+            if is_favorite:
                 score += 120
             if preferred_meal_slot and item.meal_slot == preferred_meal_slot:
                 score += 25
             if preferred_hall and item.hall_id == preferred_hall:
                 score += 12
-            score += sum(10 for tag in item.tags if tag.value in preferred_tag_values)
+            score += preference_match_count * 10
             score += sum(4 for token in tokens if token in text)
 
             if 180 <= item.calories <= 950:
                 score += 5
 
-            if wants_light and ("low-calorie" in [tag.value for tag in item.tags] or item.calories <= 380):
+            if wants_light and ("low-calorie" in tag_values or item.calories <= 380):
                 score += 8
-            if wants_seafood and ("fish" in [tag.value for tag in item.allergens] or "shellfish" in [tag.value for tag in item.allergens]):
+            if wants_seafood and ("fish" in allergen_values or "shellfish" in allergen_values):
                 score += 10
             if wants_breakfast and item.meal_slot.value == "breakfast":
                 score += 10
-            if wants_high_protein and ("high-protein" in [tag.value for tag in item.tags] or item.macros.protein >= 18):
+            if wants_high_protein and ("high-protein" in tag_values or item.macros.protein >= 18):
                 score += 10
 
-            ranked.append((score, item))
+            ranked.append((score, item, preference_match_count, is_favorite))
 
         ranked.sort(key=lambda pair: pair[0], reverse=True)
         if not ranked:
-            return [], 0
+            return [], 0, debug
+
+        debug["ranked_candidates"] = len(ranked)
+        debug["preference_signal_items"] = sum(
+            1 for _, _, preference_match_count, _ in ranked if preference_match_count > 0
+        )
+        debug["top_ranked"] = [
+            {
+                "name": item.name_en,
+                "score": int(score),
+                "favorite": is_favorite,
+                "preference_matches": preference_match_count,
+            }
+            for score, item, preference_match_count, is_favorite in ranked[:3]
+        ]
 
         top_score = int(ranked[0][0])
-        return [item for _, item in ranked[:limit]], top_score
+        return [item for _, item, _, _ in ranked[:limit]], top_score, debug
 
     @staticmethod
     def _restrict_to_latest_service_date(items: list[MenuItem]) -> list[MenuItem]:
