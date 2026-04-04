@@ -178,42 +178,55 @@ class InsightService:
         if top_score < 18:
             return self._build_chat_soft_match_response(payload.lang, menu_candidates[0])
 
-        chunks = await self._rag_service.hybrid_search(payload.message)
-        rag_context = self._rag_service.render_context(chunks)
+        try:
+            chunks = await self._rag_service.hybrid_search(payload.message)
+            rag_context = self._rag_service.render_context(chunks)
 
-        system_prompt, user_prompt = build_chat_prompt(
-            user_message=payload.message,
-            lang=payload.lang,
-            preferences=preferences,
-            menu_candidates=menu_candidates,
-            rag_context=rag_context,
-        )
-        raw = await self._openrouter.create_structured_chat_completion(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.2,
-            max_tokens=900,
-        )
+            system_prompt, user_prompt = build_chat_prompt(
+                user_message=payload.message,
+                lang=payload.lang,
+                preferences=preferences,
+                menu_candidates=menu_candidates,
+                rag_context=rag_context,
+            )
+            raw = await self._openrouter.create_structured_chat_completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.2,
+                max_tokens=900,
+            )
 
-        validated = ChatRecommendationResponse.model_validate(raw)
-        allowed_ids = {item.id for item in menu_candidates}
-        filtered_recommended_ids = [
-            item_id for item_id in validated.recommended_dish_ids if item_id in allowed_ids
-        ]
-        if not filtered_recommended_ids:
-            filtered_recommended_ids = [menu_candidates[0].id]
+            validated = ChatRecommendationResponse.model_validate(raw)
+            allowed_ids = {item.id for item in menu_candidates}
+            filtered_recommended_ids = [
+                item_id for item_id in validated.recommended_dish_ids if item_id in allowed_ids
+            ]
+            if not filtered_recommended_ids:
+                filtered_recommended_ids = [menu_candidates[0].id]
 
-        citations = [f"{chunk.source_type.value}:{chunk.source_id}" for chunk in chunks]
+            citations = [f"{chunk.source_type.value}:{chunk.source_id}" for chunk in chunks]
 
-        return validated.model_copy(
-            update={
-                "recommended_dish_ids": filtered_recommended_ids,
-                "avoid_dish_ids": [
-                    item_id for item_id in validated.avoid_dish_ids if item_id in allowed_ids
-                ],
-                "citations": citations[:5] if not validated.citations else validated.citations[:5],
-            }
-        )
+            return validated.model_copy(
+                update={
+                    "recommended_dish_ids": filtered_recommended_ids,
+                    "avoid_dish_ids": [
+                        item_id for item_id in validated.avoid_dish_ids if item_id in allowed_ids
+                    ],
+                    "citations": citations[:5] if not validated.citations else validated.citations[:5],
+                }
+            )
+        except (OpenRouterError, ValidationError) as error:
+            logger.warning(
+                "Chat recommendation fallback triggered for user_id=%s: %s",
+                payload.user_id,
+                error,
+            )
+            return self._build_chat_model_fallback_response(
+                lang=payload.lang,
+                item=menu_candidates[0],
+                preferences=preferences,
+                is_favorite=menu_candidates[0].id in favorite_ids,
+            )
 
     async def _get_menu_candidates(
         self,
@@ -539,6 +552,43 @@ class InsightService:
             if lang == "zh"
             else f"There isn't a very strong exact match today. A reasonable meal-first option is {dish_name}. Tell me whether taste, calories, or protein matters most and I can refine further."
         )
+        return ChatRecommendationResponse(
+            reply=reply,
+            recommended_dish_ids=[item.id],
+            avoid_dish_ids=[],
+            citations=[],
+        )
+
+    @staticmethod
+    def _build_chat_model_fallback_response(
+        lang: str,
+        item: MenuItem,
+        preferences: UserPreferences,
+        is_favorite: bool,
+    ) -> ChatRecommendationResponse:
+        dish_name = item.name_zh if lang == "zh" and item.name_zh else item.name_en
+        pref_values = [tag.value for tag in preferences.pref_tags][:2]
+        has_allergen_settings = bool(preferences.allergen_tags)
+
+        if lang == "zh":
+            reason_parts = ["这是基于你当前需求和今日可见菜单筛出的优先项。"]
+            if is_favorite:
+                reason_parts.append("它也在你的收藏里。")
+            elif pref_values:
+                reason_parts.append(f"它和你的偏好方向更贴近（{', '.join(pref_values)}）。")
+            if has_allergen_settings:
+                reason_parts.append("并已优先避开你的过敏设置。")
+            reply = f"今天可以优先考虑「{dish_name}」。" + "".join(reason_parts)
+        else:
+            reason_parts = ["It best matches your current request and today's visible menu."]
+            if is_favorite:
+                reason_parts.append("It's also in your favorites.")
+            elif pref_values:
+                reason_parts.append(f"It aligns with your preference focus ({', '.join(pref_values)}).")
+            if has_allergen_settings:
+                reason_parts.append("It also respects your allergen settings.")
+            reply = f"A strong option for today is {dish_name}. " + " ".join(reason_parts)
+
         return ChatRecommendationResponse(
             reply=reply,
             recommended_dish_ids=[item.id],
