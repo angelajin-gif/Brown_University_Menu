@@ -243,7 +243,7 @@ const isAbsoluteHttpUrl = (value: string): boolean => {
 const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL as string | undefined);
 const MENUS_API_URL = isAbsoluteHttpUrl(API_BASE_URL) ? `${API_BASE_URL}/api/v1/menus` : null;
 const CUSTOM_STATION_CALCULATE_API_URL = isAbsoluteHttpUrl(API_BASE_URL)
-  ? `${API_BASE_URL}/custom-station/calculate`
+  ? `${API_BASE_URL}/api/v1/custom-station/calculate`
   : null;
 
 const DIETARY_TAGS: DietaryTag[] = [
