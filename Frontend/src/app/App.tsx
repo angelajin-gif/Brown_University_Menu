@@ -1694,6 +1694,7 @@ export default function App() {
             meal_slot: mealTab,
             hall_id: selectedHallIdForInsight,
             lang,
+            visible_item_ids: visibleChatCandidateIds,
           }),
         });
 
@@ -1713,14 +1714,16 @@ export default function App() {
           query: payload.summary || defaultInsightQuery,
           preferredMealSlot: payload.recommended_meal_slot ?? mealTab,
         });
+        const hasBackendRecommendation = recommendedDishIds.length > 0;
+        const useBackendSummary = Boolean(payload.summary?.trim()) && (
+          hasBackendRecommendation || finalSelection.strongMatch
+        );
 
         setDailyInsight({
           title: payload.title?.trim() || (lang === 'zh' ? 'AI 每日洞察' : 'AI Daily Insight'),
-          summary: finalSelection.strongMatch && payload.summary?.trim()
-            ? payload.summary.trim()
-            : safeFallbackSummary(false),
-          recommendedDishId: finalSelection.item?.id ?? null,
-          strongMatch: finalSelection.strongMatch,
+          summary: useBackendSummary ? payload.summary!.trim() : safeFallbackSummary(false),
+          recommendedDishId: finalSelection.item?.id ?? recommendedDishIds[0] ?? null,
+          strongMatch: finalSelection.strongMatch || hasBackendRecommendation,
         });
       } catch (error) {
         console.error('Failed to fetch daily insight:', error);
@@ -1744,6 +1747,7 @@ export default function App() {
     safeFallbackSummary,
     selectFinalRecommendedItem,
     selectedHallIdForInsight,
+    visibleChatCandidateIds,
   ]);
 
   useEffect(() => {

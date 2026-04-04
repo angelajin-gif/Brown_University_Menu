@@ -37,14 +37,36 @@ class InsightService:
 
     async def generate_daily_insight(self, payload: DailyInsightRequest) -> DailyInsightResponse:
         preferences = await self._user_repo.get_preferences(payload.user_id)
-        menu_candidates = await self._get_menu_candidates(
-            preferred_tags=preferences.pref_tags,
-            allergen_tags=preferences.allergen_tags,
-            favorite_hall=preferences.favorite_hall,
-            meal_slot=payload.meal_slot,
-            hall_id=payload.hall_id,
-            service_date=None,
-            fallback_limit=6,
+        if payload.visible_item_ids:
+            raw_candidates = await self._menu_repo.list_menu_items_by_ids(payload.visible_item_ids)
+            excluded_allergen_values = {tag.value for tag in preferences.allergen_tags}
+            if excluded_allergen_values:
+                raw_candidates = [
+                    item
+                    for item in raw_candidates
+                    if not any(allergen.value in excluded_allergen_values for allergen in item.allergens)
+                ]
+        else:
+            raw_candidates = await self._get_menu_candidates(
+                preferred_tags=preferences.pref_tags,
+                allergen_tags=preferences.allergen_tags,
+                favorite_hall=preferences.favorite_hall,
+                meal_slot=payload.meal_slot,
+                hall_id=payload.hall_id,
+                service_date=None,
+                fallback_limit=8,
+            )
+
+        favorites = await self._user_repo.get_favorites(payload.user_id)
+        favorite_ids = set(favorites.menu_item_ids)
+        menu_candidates, _, _ranking_debug = self._build_ranked_chat_candidates(
+            items=raw_candidates,
+            message=payload.query,
+            preferred_meal_slot=payload.meal_slot,
+            preferred_hall=payload.hall_id,
+            preferred_tag_values=[tag.value for tag in preferences.pref_tags],
+            favorite_ids=favorite_ids,
+            limit=6,
         )
 
         chunks = await self._rag_service.hybrid_search(payload.query)
@@ -67,11 +89,14 @@ class InsightService:
 
             validated = DailyInsightResponse.model_validate(raw)
             allowed_ids = {item.id for item in menu_candidates}
+            filtered_recommended_ids = [
+                item_id for item_id in validated.recommended_dish_ids if item_id in allowed_ids
+            ]
+            if not filtered_recommended_ids and menu_candidates:
+                filtered_recommended_ids = [menu_candidates[0].id]
             return validated.model_copy(
                 update={
-                    "recommended_dish_ids": [
-                        item_id for item_id in validated.recommended_dish_ids if item_id in allowed_ids
-                    ],
+                    "recommended_dish_ids": filtered_recommended_ids,
                     "avoid_dish_ids": [
                         item_id for item_id in validated.avoid_dish_ids if item_id in allowed_ids
                     ],
