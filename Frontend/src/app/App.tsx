@@ -240,6 +240,7 @@ type ChatConversationContext = {
 type BackendChatRecommendationResponse = {
   reply: string;
   recommended_dish_ids?: string[];
+  final_recommended_item_id?: string | null;
   avoid_dish_ids?: string[];
   citations?: string[];
   conversation_context?: ChatConversationContext | null;
@@ -1888,26 +1889,28 @@ export default function App() {
       const recommendedDishIds = Array.isArray(payload.recommended_dish_ids)
         ? payload.recommended_dish_ids.filter((id): id is string => typeof id === 'string')
         : [];
-
-      const finalSelection = selectFinalRecommendedItem({
-        recommendedDishIds,
-        query: userText,
-        preferredMealSlot: mealTab,
-      });
-      const hasBackendRecommendation = recommendedDishIds.length > 0;
+      const canonicalRecommendedDishId = (
+        (typeof payload.final_recommended_item_id === 'string' && payload.final_recommended_item_id) ||
+        (typeof payload.conversation_context?.last_recommended_item_id === 'string'
+          ? payload.conversation_context.last_recommended_item_id
+          : '') ||
+        recommendedDishIds[0] ||
+        ''
+      ).trim() || undefined;
+      const hasBackendRecommendation = Boolean(canonicalRecommendedDishId);
       setChatConversationContext(
         payload.conversation_context ?? {
-          last_recommended_item_id: finalSelection.item?.id ?? recommendedDishIds[0] ?? null,
+          last_recommended_item_id: canonicalRecommendedDishId ?? null,
           last_ranked_candidate_ids: recommendedDishIds,
           last_interpreted_intent: null,
         }
       );
 
-      const text = (finalSelection.strongMatch || hasBackendRecommendation) && payload.reply?.trim()
+      const text = (hasBackendRecommendation || recommendedDishIds.length === 0) && payload.reply?.trim()
         ? payload.reply.trim()
         : safeFallbackSummary(true);
 
-      appendAiMessage(text, finalSelection.item?.id ?? recommendedDishIds[0]);
+      appendAiMessage(text, canonicalRecommendedDishId);
     } catch (error) {
       console.error('Failed to fetch chat recommendation:', error);
       const fallbackSelection = selectFinalRecommendedItem({

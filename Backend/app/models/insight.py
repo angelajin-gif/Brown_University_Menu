@@ -44,6 +44,7 @@ class ChatRecommendationRequest(BaseModel):
 class ChatRecommendationResponse(BaseModel):
     reply: str
     recommended_dish_ids: list[str] = Field(default_factory=list)
+    final_recommended_item_id: str | None = None
     avoid_dish_ids: list[str] = Field(default_factory=list)
     citations: list[str] = Field(default_factory=list)
     conversation_context: ChatConversationContext | None = None

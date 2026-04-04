@@ -271,12 +271,22 @@ class InsightService:
             ]
             if not filtered_recommended_ids:
                 filtered_recommended_ids = [menu_candidates[0].id]
+            canonical_item = next(
+                (item for item in menu_candidates if item.id == filtered_recommended_ids[0]),
+                menu_candidates[0],
+            )
+            normalized_reply = self._ensure_reply_mentions_item(
+                lang=payload.lang,
+                reply=validated.reply,
+                item=canonical_item,
+            )
 
             citations = [f"{chunk.source_type.value}:{chunk.source_id}" for chunk in chunks]
 
             return self._attach_chat_context(
                 response=validated.model_copy(
                     update={
+                        "reply": normalized_reply,
                         "recommended_dish_ids": filtered_recommended_ids,
                         "avoid_dish_ids": [
                             item_id for item_id in validated.avoid_dish_ids if item_id in allowed_ids
@@ -467,6 +477,7 @@ class InsightService:
             ).lower()
             score = 0
             tag_values = [tag.value for tag in item.tags]
+            tag_value_set = set(tag_values)
             allergen_values = [tag.value for tag in item.allergens]
             preference_match_count = sum(1 for tag in item.tags if tag.value in preferred_tag_values)
             is_favorite = item.id in favorite_ids
@@ -477,7 +488,22 @@ class InsightService:
                 score += 25
             if preferred_hall and item.hall_id == preferred_hall:
                 score += 12
-            score += preference_match_count * 10
+            preference_score = 0
+            for pref in preferred_tag_values:
+                if pref in tag_value_set:
+                    preference_score += 22
+                    continue
+                if pref == "high-protein" and item.macros.protein >= 18:
+                    preference_score += 12
+                    continue
+                if pref == "low-calorie" and item.calories <= 380:
+                    preference_score += 9
+                    continue
+                if pref in {"halal", "kosher"}:
+                    preference_score -= 8
+                elif pref in {"vegan", "vegetarian"}:
+                    preference_score -= 5
+            score += preference_score
             score += sum(4 for token in tokens if token in text)
 
             if 180 <= item.calories <= 950:
@@ -617,6 +643,7 @@ class InsightService:
     ) -> ChatRecommendationResponse:
         return response.model_copy(
             update={
+                "final_recommended_item_id": recommended_item_id,
                 "conversation_context": ChatConversationContext(
                     last_recommended_item_id=recommended_item_id,
                     last_ranked_candidate_ids=[item.id for item in menu_candidates[:8]],
@@ -654,6 +681,25 @@ class InsightService:
     @staticmethod
     def _item_name_for_lang(item: MenuItem, lang: str) -> str:
         return item.name_zh if lang == "zh" and item.name_zh else item.name_en
+
+    @staticmethod
+    def _ensure_reply_mentions_item(lang: str, reply: str, item: MenuItem) -> str:
+        item_name = InsightService._item_name_for_lang(item, lang)
+        clean_reply = (reply or "").strip()
+        if not clean_reply:
+            return (
+                f"今天更推荐「{item_name}」。"
+                if lang == "zh"
+                else f"I'd recommend {item_name}."
+            )
+        if item_name.lower() in clean_reply.lower():
+            return clean_reply
+        prefix = (
+            f"今天更推荐「{item_name}」。"
+            if lang == "zh"
+            else f"I'd recommend {item_name}. "
+        )
+        return f"{prefix}{clean_reply}"
 
     @staticmethod
     def _score_for_follow_up_intent(intent: str, item: MenuItem) -> float:
