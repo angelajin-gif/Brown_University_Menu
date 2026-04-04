@@ -203,12 +203,14 @@ class InsightService:
                 "chat_reco_debug user_id=%s stage=result no_match=true reason=no_safe_meal_like_candidates",
                 payload.user_id,
             )
-            return self._attach_chat_context(
+            response = self._attach_chat_context(
                 response=self._build_chat_no_match_response(payload.lang),
                 menu_candidates=[],
                 recommended_item_id=None,
                 interpreted_intent=interpreted_intent,
             )
+            self._log_chat_response_payload(payload.user_id, payload.lang, response, [])
+            return response
 
         if is_follow_up_refinement:
             logger.info(
@@ -230,21 +232,25 @@ class InsightService:
                 if payload.conversation_context
                 else None,
             )
-            return self._attach_chat_context(
+            response = self._attach_chat_context(
                 response=follow_up_response,
                 menu_candidates=menu_candidates,
                 recommended_item_id=recommended_item_id,
                 interpreted_intent=interpreted_intent,
             )
+            self._log_chat_response_payload(payload.user_id, payload.lang, response, menu_candidates)
+            return response
 
         # Deterministic graceful fallback when query does not have a strong meal-like match.
         if top_score < 18:
-            return self._attach_chat_context(
+            response = self._attach_chat_context(
                 response=self._build_chat_soft_match_response(payload.lang, menu_candidates[0]),
                 menu_candidates=menu_candidates,
                 recommended_item_id=menu_candidates[0].id,
                 interpreted_intent=interpreted_intent,
             )
+            self._log_chat_response_payload(payload.user_id, payload.lang, response, menu_candidates)
+            return response
 
         try:
             chunks = await self._rag_service.hybrid_search(payload.message)
@@ -275,15 +281,16 @@ class InsightService:
                 (item for item in menu_candidates if item.id == filtered_recommended_ids[0]),
                 menu_candidates[0],
             )
-            normalized_reply = self._ensure_reply_mentions_item(
+            normalized_reply = self._coerce_llm_reply_to_canonical(
                 lang=payload.lang,
                 reply=validated.reply,
                 item=canonical_item,
+                candidates=menu_candidates,
             )
 
             citations = [f"{chunk.source_type.value}:{chunk.source_id}" for chunk in chunks]
 
-            return self._attach_chat_context(
+            response = self._attach_chat_context(
                 response=validated.model_copy(
                     update={
                         "reply": normalized_reply,
@@ -298,13 +305,15 @@ class InsightService:
                 recommended_item_id=filtered_recommended_ids[0] if filtered_recommended_ids else None,
                 interpreted_intent=interpreted_intent,
             )
+            self._log_chat_response_payload(payload.user_id, payload.lang, response, menu_candidates)
+            return response
         except (OpenRouterError, ValidationError) as error:
             logger.warning(
                 "Chat recommendation fallback triggered for user_id=%s: %s",
                 payload.user_id,
                 error,
             )
-            return self._attach_chat_context(
+            response = self._attach_chat_context(
                 response=self._build_chat_model_fallback_response(
                     lang=payload.lang,
                     item=menu_candidates[0],
@@ -315,6 +324,8 @@ class InsightService:
                 recommended_item_id=menu_candidates[0].id,
                 interpreted_intent=interpreted_intent,
             )
+            self._log_chat_response_payload(payload.user_id, payload.lang, response, menu_candidates)
+            return response
 
     async def _get_menu_candidates(
         self,
@@ -683,23 +694,74 @@ class InsightService:
         return item.name_zh if lang == "zh" and item.name_zh else item.name_en
 
     @staticmethod
-    def _ensure_reply_mentions_item(lang: str, reply: str, item: MenuItem) -> str:
+    def _coerce_llm_reply_to_canonical(
+        lang: str,
+        reply: str,
+        item: MenuItem,
+        candidates: list[MenuItem],
+    ) -> str:
         item_name = InsightService._item_name_for_lang(item, lang)
         clean_reply = (reply or "").strip()
+        canonical_lower_names = {
+            name.strip().lower()
+            for name in [item.name_en, item.name_zh, item_name]
+            if name and name.strip()
+        }
+        other_candidate_names = {
+            name.strip().lower()
+            for candidate in candidates
+            if candidate.id != item.id
+            for name in [candidate.name_en, candidate.name_zh]
+            if name and name.strip() and len(name.strip()) >= 4
+        }
+        reply_lower = clean_reply.lower()
+        mentions_canonical = any(name in reply_lower for name in canonical_lower_names)
+        mentions_other_candidates = any(name in reply_lower for name in other_candidate_names)
+
+        canonical_only_reply = (
+            f"今天更推荐「{item_name}」，它与当前要求最匹配。"
+            if lang == "zh"
+            else f"I'd recommend {item_name}; it is the best fit for your current request."
+        )
+
         if not clean_reply:
-            return (
-                f"今天更推荐「{item_name}」。"
-                if lang == "zh"
-                else f"I'd recommend {item_name}."
-            )
-        if item_name.lower() in clean_reply.lower():
+            return canonical_only_reply
+        if mentions_other_candidates and not mentions_canonical:
+            # Prevent contradictory model text from overriding canonical item.
+            return canonical_only_reply
+        if mentions_canonical:
             return clean_reply
+
         prefix = (
             f"今天更推荐「{item_name}」。"
             if lang == "zh"
             else f"I'd recommend {item_name}. "
         )
         return f"{prefix}{clean_reply}"
+
+    @staticmethod
+    def _log_chat_response_payload(
+        user_id: str,
+        lang: str,
+        response: ChatRecommendationResponse,
+        candidates: list[MenuItem],
+    ) -> None:
+        id_to_name = {
+            item.id: InsightService._item_name_for_lang(item, lang)
+            for item in candidates
+        }
+        final_id = response.final_recommended_item_id
+        logger.info(
+            "chat_reco_debug user_id=%s stage=response_payload reply=%r final_recommended_item_id=%s "
+            "recommended_dish_ids=%s last_recommended_item_id=%s final_item_name=%r recommended_item_names=%s",
+            user_id,
+            (response.reply or "").strip(),
+            final_id,
+            response.recommended_dish_ids,
+            response.conversation_context.last_recommended_item_id if response.conversation_context else None,
+            id_to_name.get(final_id, None),
+            [id_to_name.get(item_id, None) for item_id in response.recommended_dish_ids],
+        )
 
     @staticmethod
     def _score_for_follow_up_intent(intent: str, item: MenuItem) -> float:
