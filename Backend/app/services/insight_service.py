@@ -91,15 +91,25 @@ class InsightService:
         payload: ChatRecommendationRequest,
     ) -> ChatRecommendationResponse:
         preferences = await self._user_repo.get_preferences(payload.user_id)
-        raw_candidates = await self._get_menu_candidates(
-            preferred_tags=preferences.pref_tags,
-            allergen_tags=preferences.allergen_tags,
-            favorite_hall=preferences.favorite_hall,
-            meal_slot=payload.meal_slot,
-            hall_id=payload.hall_id,
-            service_date=None,
-            fallback_limit=8,
-        )
+        if payload.visible_item_ids:
+            raw_candidates = await self._menu_repo.list_menu_items_by_ids(payload.visible_item_ids)
+            excluded_allergen_values = {tag.value for tag in preferences.allergen_tags}
+            if excluded_allergen_values:
+                raw_candidates = [
+                    item
+                    for item in raw_candidates
+                    if not any(allergen.value in excluded_allergen_values for allergen in item.allergens)
+                ]
+        else:
+            raw_candidates = await self._get_menu_candidates(
+                preferred_tags=preferences.pref_tags,
+                allergen_tags=preferences.allergen_tags,
+                favorite_hall=preferences.favorite_hall,
+                meal_slot=payload.meal_slot,
+                hall_id=payload.hall_id,
+                service_date=None,
+                fallback_limit=8,
+            )
         favorites = await self._user_repo.get_favorites(payload.user_id)
         favorite_ids = set(favorites.menu_item_ids)
 

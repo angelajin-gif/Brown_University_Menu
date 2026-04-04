@@ -30,6 +30,7 @@ class ChatRecommendationRequest(BaseModel):
     meal_slot: MealSlot | None = None
     hall_id: HallId | None = None
     lang: str = Field(default="zh", pattern=r"^(zh|en)$")
+    visible_item_ids: list[str] = Field(default_factory=list, max_length=500)
 
 
 class ChatRecommendationResponse(BaseModel):

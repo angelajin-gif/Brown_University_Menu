@@ -1349,6 +1349,40 @@ export default function App() {
     return uniqueHallIds.length === 1 ? uniqueHallIds[0] : null;
   }, [menuItems, selectedLocation]);
 
+  const visibleChatCandidateIds = useMemo<string[]>(() => {
+    let currentItems = menuItems;
+
+    if (isSearching && searchQuery.trim() !== '') {
+      const q = searchQuery.toLowerCase();
+      currentItems = currentItems.filter(item =>
+        item.name.en.toLowerCase().includes(q) ||
+        item.name.zh.includes(q)
+      );
+    } else {
+      currentItems = currentItems.filter((item) => shouldIncludeItemForMealTab(item, mealTab));
+      currentItems = Array.from(new Map(currentItems.map((item) => [item.id, item])).values());
+    }
+
+    if (selectedLocation !== 'all') {
+      const selectedHallKey = getHallRuleKey(selectedLocation);
+      currentItems = currentItems.filter(
+        (item) => getHallRuleKey(getHallDisplayLabel(item)) === selectedHallKey
+      );
+    }
+
+    const stationSections = buildStationSections(currentItems);
+    const ids: string[] = [];
+    for (const section of stationSections) {
+      if (section.kind !== 'items') {
+        continue;
+      }
+      for (const item of section.items) {
+        ids.push(item.id);
+      }
+    }
+    return Array.from(new Set(ids));
+  }, [isSearching, mealTab, menuItems, searchQuery, selectedLocation]);
+
   const safeFallbackSummary = useCallback(
     (isChat: boolean): string => {
       if (lang === 'zh') {
@@ -1824,6 +1858,7 @@ export default function App() {
           meal_slot: mealTab,
           hall_id: selectedHallIdForInsight,
           lang,
+          visible_item_ids: visibleChatCandidateIds,
         }),
       });
 
