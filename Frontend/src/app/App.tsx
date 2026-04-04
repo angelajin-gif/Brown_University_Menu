@@ -492,6 +492,9 @@ const sharpeHalalDinnerPredicate: StationPredicate = (item) => {
   return value.includes('chicken') || value.includes('potato');
 };
 
+const sharpeWafflesPredicate: StationPredicate = (item) =>
+  item.name.en.toLowerCase().includes('waffle');
+
 const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
   Andrews: {
     'Deli 11a-3p': { type: 'show_all' },
@@ -555,6 +558,7 @@ const hallDisplayRules: Record<string, Record<string, StationDisplayRule>> = {
     'Sweets Breakfast': { type: 'hide' },
     'Oatmeal Bar': { type: 'hide' },
     'Omelet Bar': { type: 'summary_only', keepItems: ['Sharpe Omelet Bar'] },
+    Waffles: { type: 'summary_only', predicate: sharpeWafflesPredicate },
     Soups: { type: 'show_all' },
     'Lunch Comforts': { type: 'show_all' },
     Harvest: { type: 'hide' },
