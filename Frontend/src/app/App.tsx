@@ -1837,10 +1837,10 @@ export default function App() {
     }
 
     const displayName = getItemDisplayName(recommendedItem, lang);
-    const normalizedText = lang === 'zh'
-      ? `今天更推荐「${displayName}」。${summary}`
-      : `Today's best pick is ${displayName}. ${summary}`;
-    return { text: normalizedText, recommendedDishId };
+    const canonicalOnlyText = lang === 'zh'
+      ? `今天更推荐「${displayName}」，它是当前最匹配你偏好与筛选条件的选项。`
+      : `Today's best pick is ${displayName}. It is the best match for your current preferences and filters.`;
+    return { text: canonicalOnlyText, recommendedDishId };
   }, [dailyInsight, lang, menuItems, safeFallbackSummary]);
 
   // AI Chat Logic
