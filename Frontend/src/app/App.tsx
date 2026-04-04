@@ -270,70 +270,98 @@ type AuthContext = {
   accessToken: string;
 };
 
-const decodeJwtPayload = (token: string): Record<string, unknown> | null => {
-  const parts = token.split('.');
-  if (parts.length < 2) return null;
+type SupabaseSessionLike = {
+  access_token?: string;
+  user?: { id?: string };
+};
+
+type SupabaseSubscriptionLike = {
+  unsubscribe: () => void;
+};
+
+type SupabaseClientLike = {
+  auth: {
+    getSession: () => Promise<{ data?: { session?: SupabaseSessionLike | null }; error?: { message?: string } | null }>;
+    onAuthStateChange: (
+      callback: (event: string, session: SupabaseSessionLike | null) => void
+    ) => { data?: { subscription?: SupabaseSubscriptionLike } };
+  };
+};
+
+const SUPABASE_URL = normalizeBaseUrl(
+  (import.meta.env.VITE_SUPABASE_URL as string | undefined) ??
+    (import.meta.env.VITE_SUPABASE_PROJECT_URL as string | undefined)
+);
+const SUPABASE_ANON_KEY = (
+  (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ??
+  (import.meta.env.VITE_SUPABASE_PUBLIC_ANON_KEY as string | undefined) ??
+  (import.meta.env.VITE_SUPABASE_KEY as string | undefined) ??
+  ''
+).trim();
+
+const createSupabaseClient = (factory: unknown): SupabaseClientLike | null => {
+  if (typeof factory !== 'function') return null;
 
   try {
-    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const padded = `${base64}${'='.repeat((4 - (base64.length % 4)) % 4)}`;
-    const decoded = atob(padded);
-    const payload = JSON.parse(decoded) as Record<string, unknown>;
-    return payload;
-  } catch {
-    return null;
+    const candidate = (factory as (
+      url: string,
+      anonKey: string,
+      options: { auth: { persistSession: boolean; autoRefreshToken: boolean; detectSessionInUrl: boolean } }
+    ) => SupabaseClientLike)(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    });
+
+    if (
+      candidate &&
+      typeof candidate.auth?.getSession === 'function' &&
+      typeof candidate.auth?.onAuthStateChange === 'function'
+    ) {
+      return candidate;
+    }
+  } catch (error) {
+    console.error('Failed to create Supabase client:', error);
   }
+
+  return null;
 };
 
-const extractAccessTokenFromSupabaseStorage = (): string | null => {
-  if (typeof window === 'undefined') return null;
+let supabaseClientPromise: Promise<SupabaseClientLike | null> | null = null;
 
-  const tryReadStorage = (storage: Storage): string | null => {
-    for (let index = 0; index < storage.length; index += 1) {
-      const key = storage.key(index);
-      if (!key || !key.startsWith('sb-') || !key.endsWith('-auth-token')) continue;
+const getSupabaseClient = async (): Promise<SupabaseClientLike | null> => {
+  if (supabaseClientPromise) return supabaseClientPromise;
 
-      const rawValue = storage.getItem(key);
-      if (!rawValue) continue;
-
-      try {
-        const parsed = JSON.parse(rawValue) as
-          | { access_token?: string; currentSession?: { access_token?: string }; session?: { access_token?: string } }
-          | string;
-        if (typeof parsed === 'string' && parsed.trim()) {
-          return parsed.trim();
-        }
-        if (typeof parsed === 'object' && parsed !== null) {
-          const token =
-            parsed.access_token ??
-            parsed.currentSession?.access_token ??
-            parsed.session?.access_token ??
-            '';
-          if (typeof token === 'string' && token.trim()) {
-            return token.trim();
-          }
-        }
-      } catch {
-        continue;
-      }
+  supabaseClientPromise = (async () => {
+    if (!isAbsoluteHttpUrl(SUPABASE_URL) || !SUPABASE_ANON_KEY) {
+      return null;
     }
 
-    return null;
-  };
+    if (typeof window === 'undefined') {
+      return null;
+    }
 
-  return tryReadStorage(window.localStorage) ?? tryReadStorage(window.sessionStorage);
+    const fromGlobal = createSupabaseClient(
+      (window as Window & { supabase?: { createClient?: unknown } }).supabase?.createClient
+    );
+    if (fromGlobal) {
+      return fromGlobal;
+    }
 
-};
+    try {
+      const module = (await import(
+        /* @vite-ignore */ 'https://esm.sh/@supabase/supabase-js@2?bundle'
+      )) as { createClient?: unknown };
+      return createSupabaseClient(module.createClient);
+    } catch (error) {
+      console.error('Failed to load Supabase auth client module:', error);
+      return null;
+    }
+  })();
 
-const getSupabaseAuthContextFromStorage = (): AuthContext | null => {
-  const accessToken = extractAccessTokenFromSupabaseStorage();
-  if (!accessToken) return null;
-
-  const payload = decodeJwtPayload(accessToken);
-  const userId = typeof payload?.sub === 'string' ? payload.sub.trim() : '';
-  if (!userId) return null;
-
-  return { userId, accessToken };
+  return supabaseClientPromise;
 };
 
 const DIETARY_TAGS: DietaryTag[] = [
@@ -1273,11 +1301,54 @@ export default function App() {
   }, [hallOptions, selectedLocation]);
 
   useEffect(() => {
-    const context = getSupabaseAuthContextFromStorage();
-    setAuthContext(context);
-    if (!context) {
+    let cancelled = false;
+    let subscription: SupabaseSubscriptionLike | undefined;
+
+    const applySession = (session: SupabaseSessionLike | null | undefined) => {
+      const accessToken = typeof session?.access_token === 'string' ? session.access_token.trim() : '';
+      const userId = typeof session?.user?.id === 'string' ? session.user.id.trim() : '';
+
+      if (accessToken && userId) {
+        setAuthContext({ userId, accessToken });
+        setHasHydratedUserState(false);
+        return;
+      }
+
+      setAuthContext(null);
       setHasHydratedUserState(true);
-    }
+    };
+
+    const bootstrapSupabaseSession = async () => {
+      const supabaseClient = await getSupabaseClient();
+      if (cancelled) return;
+
+      if (!supabaseClient) {
+        setAuthContext(null);
+        setHasHydratedUserState(true);
+        return;
+      }
+
+      const { data, error } = await supabaseClient.auth.getSession();
+      if (cancelled) return;
+
+      if (error) {
+        console.error('Failed to read Supabase session:', error.message ?? error);
+      }
+      applySession(data?.session ?? null);
+
+      const authStateChange = supabaseClient.auth.onAuthStateChange((_event, session) => {
+        if (cancelled) return;
+        applySession(session);
+      });
+      subscription = authStateChange?.data?.subscription;
+    };
+
+    void bootstrapSupabaseSession();
+
+    return () => {
+      cancelled = true;
+      subscription?.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
