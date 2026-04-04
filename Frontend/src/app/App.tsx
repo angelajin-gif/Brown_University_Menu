@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { 
   MapPin, 
   ChevronDown, 
@@ -220,6 +220,31 @@ type BackendFavoritesResponse = {
   menu_item_ids: string[];
 };
 
+type BackendDailyInsightResponse = {
+  title: string;
+  summary: string;
+  recommended_meal_slot?: MealTab | null;
+  recommended_dish_ids?: string[];
+  avoid_dish_ids?: string[];
+  nutrition_focus?: string[];
+  safety_alerts?: string[];
+  confidence?: number;
+};
+
+type BackendChatRecommendationResponse = {
+  reply: string;
+  recommended_dish_ids?: string[];
+  avoid_dish_ids?: string[];
+  citations?: string[];
+};
+
+type DailyInsightState = {
+  title: string;
+  summary: string;
+  recommendedDishId: string | null;
+  strongMatch: boolean;
+};
+
 type CustomStationNutritionSummary = {
   calories: number;
   protein: number;
@@ -257,6 +282,12 @@ const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL as strin
 const MENUS_API_URL = isAbsoluteHttpUrl(API_BASE_URL) ? `${API_BASE_URL}/api/v1/menus` : null;
 const CUSTOM_STATION_CALCULATE_API_URL = isAbsoluteHttpUrl(API_BASE_URL)
   ? `${API_BASE_URL}/api/v1/custom-station/calculate`
+  : null;
+const DAILY_INSIGHT_API_URL = isAbsoluteHttpUrl(API_BASE_URL)
+  ? `${API_BASE_URL}/api/v1/insights/daily`
+  : null;
+const CHAT_RECOMMENDATION_API_URL = isAbsoluteHttpUrl(API_BASE_URL)
+  ? `${API_BASE_URL}/api/v1/insights/chat`
   : null;
 
 const buildUserPreferencesApiUrl = (userId: string): string =>
@@ -1130,6 +1161,7 @@ export default function App() {
   const [customStationError, setCustomStationError] = useState<string | null>(null);
   const [authContext, setAuthContext] = useState<AuthContext | null>(null);
   const [hasHydratedUserState, setHasHydratedUserState] = useState(false);
+  const [dailyInsight, setDailyInsight] = useState<DailyInsightState | null>(null);
 
   const buildAuthHeaders = (accessToken: string, includeJsonContentType = false): HeadersInit => ({
     Accept: 'application/json',
@@ -1295,6 +1327,124 @@ export default function App() {
     setSelectedLocation(loc);
     setIsLocationMenuOpen(false);
   };
+
+  const selectedHallIdForInsight = useMemo<HallId | null>(() => {
+    if (selectedLocation === 'all') {
+      return null;
+    }
+
+    const selectedHallKey = getHallRuleKey(selectedLocation);
+    const uniqueHallIds = Array.from(
+      new Set(
+        menuItems
+          .filter((item) => getHallRuleKey(getHallDisplayLabel(item)) === selectedHallKey)
+          .map((item) => item.hallId)
+      )
+    );
+
+    return uniqueHallIds.length === 1 ? uniqueHallIds[0] : null;
+  }, [menuItems, selectedLocation]);
+
+  const safeFallbackSummary = useCallback(
+    (isChat: boolean): string => {
+      if (lang === 'zh') {
+        return isChat
+          ? '我已按今日菜单、你的偏好和过敏限制筛选，但暂时没有足够强匹配的一道菜。你可以换个关键词或放宽一个条件。'
+          : '我已结合今日菜单、你的偏好和过敏限制进行筛选，暂未找到足够强匹配的一道推荐。';
+      }
+      return isChat
+        ? "I've filtered today's menu using your preferences and allergen constraints, but there isn't a strong match yet. Try another query or relax one constraint."
+        : "I filtered today's menu with your preferences and allergen constraints, but couldn't find a strong single-item match yet.";
+    },
+    [lang]
+  );
+
+  const defaultInsightQuery = useMemo(
+    () =>
+      lang === 'zh'
+        ? '请基于今日菜单和我的偏好推荐一份最适合我的饮食方案'
+        : "Recommend one best option from today's menu based on my preferences and allergens.",
+    [lang]
+  );
+
+  const selectFinalRecommendedItem = useCallback(
+    ({
+      recommendedDishIds,
+      query,
+      preferredMealSlot,
+    }: {
+      recommendedDishIds: string[];
+      query: string;
+      preferredMealSlot?: MealTab | null;
+    }): { item: MenuItem | null; strongMatch: boolean } => {
+      const allergenSafeItems = menuItems.filter(
+        (item) => !item.allergens.some((allergen) => allergenTags.includes(allergen))
+      );
+      if (allergenSafeItems.length === 0) {
+        return { item: null, strongMatch: false };
+      }
+
+      const dietaryPool = prefTags.length
+        ? allergenSafeItems.filter((item) => item.tags.some((tag) => prefTags.includes(tag)))
+        : allergenSafeItems;
+      const candidatePool = dietaryPool.length > 0 ? dietaryPool : allergenSafeItems;
+      if (candidatePool.length === 0) {
+        return { item: null, strongMatch: false };
+      }
+
+      const byId = new Map(candidatePool.map((item) => [item.id, item]));
+      const recommendedItems = recommendedDishIds
+        .map((id) => byId.get(id))
+        .filter((item): item is MenuItem => Boolean(item));
+
+      const favoriteRecommended = recommendedItems.find((item) => favorites.includes(item.id));
+      if (favoriteRecommended) {
+        return { item: favoriteRecommended, strongMatch: true };
+      }
+      if (recommendedItems.length > 0) {
+        return { item: recommendedItems[0], strongMatch: true };
+      }
+
+      const normalizedQuery = query.trim().toLowerCase();
+      const queryTokens = normalizedQuery.split(/[\s,，。.!?！？:;；]+/).filter(Boolean);
+      const queryWantsSeafood = queryTokens.some((token) =>
+        ['seafood', 'fish', 'salmon', 'shrimp', '海鲜', '鱼', '三文鱼', '虾'].includes(token)
+      );
+      const queryWantsLight = queryTokens.some((token) =>
+        ['light', 'low', 'healthy', '清淡', '轻食', '低卡', '减脂'].includes(token)
+      );
+
+      const ranked = candidatePool
+        .map((item) => {
+          const text = `${item.name.en} ${item.name.zh} ${item.stationName ?? ''} ${item.externalLocationName ?? ''}`.toLowerCase();
+          let score = 0;
+
+          if (favorites.includes(item.id)) score += 100;
+          if (preferredMealSlot && item.mealSlot === preferredMealSlot) score += 8;
+          score += item.tags.reduce((total, tag) => total + (prefTags.includes(tag) ? 6 : 0), 0);
+          score += queryTokens.reduce((total, token) => total + (text.includes(token) ? 4 : 0), 0);
+
+          if (queryWantsSeafood && (item.allergens.includes('fish') || item.allergens.includes('shellfish'))) {
+            score += 10;
+          }
+          if (queryWantsLight && (item.tags.includes('low-calorie') || item.calories <= 320)) {
+            score += 8;
+          }
+
+          return { item, score };
+        })
+        .sort((a, b) => b.score - a.score);
+
+      const best = ranked[0];
+      if (!best) {
+        return { item: null, strongMatch: false };
+      }
+
+      const strongMatch = best.score >= 10;
+      return { item: best.item, strongMatch };
+    },
+    [allergenTags, favorites, menuItems, prefTags]
+  );
 
   useEffect(() => {
     if (selectedLocation !== 'all' && !hallOptions.includes(selectedLocation)) {
@@ -1470,6 +1620,95 @@ export default function App() {
   }, [authContext, hasHydratedUserState, favHall, aiAutoPush, prefTags, allergenTags]);
 
   useEffect(() => {
+    if (isMenuLoading || menuItems.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const setFallbackInsight = (summaryOverride?: string) => {
+      const fallbackSelection = selectFinalRecommendedItem({
+        recommendedDishIds: [],
+        query: defaultInsightQuery,
+        preferredMealSlot: mealTab,
+      });
+      setDailyInsight({
+        title: lang === 'zh' ? 'AI 每日洞察' : 'AI Daily Insight',
+        summary: summaryOverride ?? safeFallbackSummary(false),
+        recommendedDishId: fallbackSelection.item?.id ?? null,
+        strongMatch: fallbackSelection.strongMatch,
+      });
+    };
+
+    const fetchDailyInsight = async () => {
+      if (!authContext || !DAILY_INSIGHT_API_URL) {
+        setFallbackInsight();
+        return;
+      }
+
+      try {
+        const response = await fetch(DAILY_INSIGHT_API_URL, {
+          method: 'POST',
+          headers: buildAuthHeaders(authContext.accessToken, true),
+          body: JSON.stringify({
+            user_id: authContext.userId,
+            query: defaultInsightQuery,
+            meal_slot: mealTab,
+            hall_id: selectedHallIdForInsight,
+            lang,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Daily insight request failed: ${response.status}`);
+        }
+
+        const payload = (await response.json()) as BackendDailyInsightResponse;
+        if (cancelled) return;
+
+        const recommendedDishIds = Array.isArray(payload.recommended_dish_ids)
+          ? payload.recommended_dish_ids.filter((id): id is string => typeof id === 'string')
+          : [];
+
+        const finalSelection = selectFinalRecommendedItem({
+          recommendedDishIds,
+          query: payload.summary || defaultInsightQuery,
+          preferredMealSlot: payload.recommended_meal_slot ?? mealTab,
+        });
+
+        setDailyInsight({
+          title: payload.title?.trim() || (lang === 'zh' ? 'AI 每日洞察' : 'AI Daily Insight'),
+          summary: finalSelection.strongMatch && payload.summary?.trim()
+            ? payload.summary.trim()
+            : safeFallbackSummary(false),
+          recommendedDishId: finalSelection.item?.id ?? null,
+          strongMatch: finalSelection.strongMatch,
+        });
+      } catch (error) {
+        console.error('Failed to fetch daily insight:', error);
+        if (cancelled) return;
+        setFallbackInsight();
+      }
+    };
+
+    void fetchDailyInsight();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    authContext,
+    defaultInsightQuery,
+    isMenuLoading,
+    lang,
+    mealTab,
+    menuItems,
+    safeFallbackSummary,
+    selectFinalRecommendedItem,
+    selectedHallIdForInsight,
+  ]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const fetchTodayMenus = async () => {
@@ -1528,19 +1767,17 @@ export default function App() {
   // AI Chat Logic
   useEffect(() => {
     if (isChatOpen && chatMessages.length === 0) {
-      const initialRecommendationId =
-        menuItems.find((item) => item.mealSlot === 'lunch')?.id ?? menuItems[0]?.id;
-      // Initialize with the first AI insight
+      // Initialize from the same daily insight result object used by the hero card.
       setChatMessages([
         {
           id: '1',
           sender: 'ai',
-          text: t.aiDesc,
-          recommendedDishId: initialRecommendationId,
+          text: dailyInsight?.summary ?? safeFallbackSummary(true),
+          recommendedDishId: dailyInsight?.recommendedDishId ?? undefined,
         },
       ]);
     }
-  }, [isChatOpen, chatMessages.length, t.aiDesc, menuItems]);
+  }, [chatMessages.length, dailyInsight, isChatOpen, safeFallbackSummary]);
 
   useEffect(() => {
     // Auto-scroll to bottom of chat
@@ -1549,7 +1786,7 @@ export default function App() {
     }
   }, [chatMessages, isChatOpen]);
 
-  const handleSendChat = () => {
+  const handleSendChat = async () => {
     if (!chatInput.trim()) return;
 
     const userText = chatInput.trim();
@@ -1557,38 +1794,70 @@ export default function App() {
     setChatMessages(prev => [...prev, newUserMsg]);
     setChatInput('');
 
-    const pickRecommendedItem = (predicate: (item: MenuItem) => boolean): MenuItem | undefined => (
-      menuItems.find((item) => item.mealSlot === mealTab && predicate(item))
-      ?? menuItems.find(predicate)
-      ?? menuItems.find((item) => item.mealSlot === mealTab)
-      ?? menuItems[0]
-    );
+    const appendAiMessage = (text: string, recommendedDishId?: string) => {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          sender: 'ai',
+          text,
+          recommendedDishId,
+        },
+      ]);
+    };
 
-    // Lightweight keyword recommendation from today's menu.
-    setTimeout(() => {
-      const lower = userText.toLowerCase();
-      let aiText = '';
-      let recommended: MenuItem | undefined;
-
-      if (lower.includes('海鲜') || lower.includes('seafood') || lower.includes('鱼') || lower.includes('fish')) {
-        aiText = lang === 'zh' ? '为你找到这款高蛋白海鲜，清淡不油腻：' : 'Found this high-protein seafood option, light and not greasy:';
-        recommended = pickRecommendedItem(item => item.allergens.includes('fish') || item.allergens.includes('shellfish'));
-      } else if (lower.includes('少油') || lower.includes('light') || lower.includes('清淡') || lower.includes('减肥')) {
-        aiText = lang === 'zh' ? '没问题，这道低卡清淡的菜品很适合你：' : 'No problem, this light and low-calorie dish is perfect for you:';
-        recommended = pickRecommendedItem(item => item.tags.includes('low-calorie') || item.calories <= 320);
-      } else if (lower.includes('辣') || lower.includes('spicy')) {
-        aiText = lang === 'zh' ? '安排！这款微辣的菜品保证让你胃口大开：' : 'Got it! This spicy dish is very appetizing:';
-        recommended = pickRecommendedItem(item => item.tags.includes('spicy'));
-      } else {
-        aiText = lang === 'zh' ? '根据你的输入，我为你推荐：' : 'Based on your input, I recommend:';
-        recommended = pickRecommendedItem(item => item.tags.includes('high-protein'));
+    try {
+      if (!authContext || !CHAT_RECOMMENDATION_API_URL) {
+        throw new Error('Chat recommendation API is unavailable.');
       }
 
-      setChatMessages(prev => [
-        ...prev,
-        { id: Date.now().toString(), sender: 'ai', text: aiText, recommendedDishId: recommended?.id }
-      ]);
-    }, 600);
+      const response = await fetch(CHAT_RECOMMENDATION_API_URL, {
+        method: 'POST',
+        headers: buildAuthHeaders(authContext.accessToken, true),
+        body: JSON.stringify({
+          user_id: authContext.userId,
+          message: userText,
+          meal_slot: mealTab,
+          hall_id: selectedHallIdForInsight,
+          lang,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Chat recommendation request failed: ${response.status}`);
+      }
+
+      const payload = (await response.json()) as BackendChatRecommendationResponse;
+      const recommendedDishIds = Array.isArray(payload.recommended_dish_ids)
+        ? payload.recommended_dish_ids.filter((id): id is string => typeof id === 'string')
+        : [];
+
+      const finalSelection = selectFinalRecommendedItem({
+        recommendedDishIds,
+        query: userText,
+        preferredMealSlot: mealTab,
+      });
+
+      const text = finalSelection.strongMatch && payload.reply?.trim()
+        ? payload.reply.trim()
+        : safeFallbackSummary(true);
+
+      appendAiMessage(text, finalSelection.item?.id);
+    } catch (error) {
+      console.error('Failed to fetch chat recommendation:', error);
+      const fallbackSelection = selectFinalRecommendedItem({
+        recommendedDishIds: [],
+        query: userText,
+        preferredMealSlot: mealTab,
+      });
+      const text = fallbackSelection.strongMatch
+        ? (lang === 'zh'
+            ? '推荐服务暂时不可用，我先按今日菜单和你的偏好给出最接近的一项：'
+            : "The recommendation service is temporarily unavailable, so here's the closest match from today's menu and your preferences:")
+        : safeFallbackSummary(true);
+
+      appendAiMessage(text, fallbackSelection.item?.id);
+    }
   };
 
   // Render Views
@@ -1645,10 +1914,10 @@ export default function App() {
                   </div>
                 </div>
                 <h2 className="text-lg font-bold text-gray-900 leading-snug">
-                  {t.aiTitle}<span className="text-indigo-600">{t.aiTitleHighlight}</span> 💪
+                  {dailyInsight?.title || `${t.aiTitle}${t.aiTitleHighlight}`}
                 </h2>
                 <p className="text-sm text-gray-600 leading-relaxed line-clamp-2">
-                  {t.aiDesc}
+                  {dailyInsight?.summary || t.aiDesc}
                 </p>
               </div>
             </div>
