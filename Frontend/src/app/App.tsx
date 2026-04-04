@@ -282,6 +282,7 @@ type SupabaseSubscriptionLike = {
 type SupabaseClientLike = {
   auth: {
     getSession: () => Promise<{ data?: { session?: SupabaseSessionLike | null }; error?: { message?: string } | null }>;
+    signInAnonymously: () => Promise<{ data?: { session?: SupabaseSessionLike | null }; error?: { message?: string } | null }>;
     onAuthStateChange: (
       callback: (event: string, session: SupabaseSessionLike | null) => void
     ) => { data?: { subscription?: SupabaseSubscriptionLike } };
@@ -318,6 +319,7 @@ const createSupabaseClient = (factory: unknown): SupabaseClientLike | null => {
     if (
       candidate &&
       typeof candidate.auth?.getSession === 'function' &&
+      typeof candidate.auth?.signInAnonymously === 'function' &&
       typeof candidate.auth?.onAuthStateChange === 'function'
     ) {
       return candidate;
@@ -1323,6 +1325,7 @@ export default function App() {
       if (cancelled) return;
 
       if (!supabaseClient) {
+        console.error('[auth] auth bootstrap failure: Supabase client unavailable.');
         setAuthContext(null);
         setHasHydratedUserState(true);
         return;
@@ -1334,7 +1337,28 @@ export default function App() {
       if (error) {
         console.error('Failed to read Supabase session:', error.message ?? error);
       }
-      applySession(data?.session ?? null);
+      let session = data?.session ?? null;
+      if (session) {
+        console.info('[auth] existing session found.');
+      } else {
+        const { data: anonymousData, error: anonymousError } = await supabaseClient.auth.signInAnonymously();
+        if (cancelled) return;
+
+        if (anonymousError) {
+          console.error('[auth] auth bootstrap failure:', anonymousError.message ?? anonymousError);
+          applySession(null);
+          return;
+        }
+
+        session = anonymousData?.session ?? null;
+        if (session) {
+          console.info('[auth] anonymous session created.');
+        } else {
+          console.error('[auth] auth bootstrap failure: anonymous sign-in returned no session.');
+        }
+      }
+
+      applySession(session);
 
       const authStateChange = supabaseClient.auth.onAuthStateChange((_event, session) => {
         if (cancelled) return;
