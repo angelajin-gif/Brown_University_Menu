@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from app.db.repositories.menu_repository import MenuRepository
 from app.db.repositories.user_repository import UserRepository
 from app.models.insight import (
@@ -9,7 +11,7 @@ from app.models.insight import (
     DailyInsightResponse,
 )
 from app.models.menu import MenuItem
-from app.services.openrouter_service import OpenRouterService
+from app.services.openrouter_service import OpenRouterError, OpenRouterService
 from app.services.prompt_builder import build_chat_prompt, build_daily_insight_prompt
 from app.services.rag_service import RagService
 
@@ -49,25 +51,30 @@ class InsightService:
             menu_candidates=menu_candidates,
             rag_context=rag_context,
         )
-        raw = await self._openrouter.create_structured_chat_completion(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.1,
-            max_tokens=1000,
-        )
+        try:
+            raw = await self._openrouter.create_structured_chat_completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.1,
+                max_tokens=1000,
+            )
 
-        validated = DailyInsightResponse.model_validate(raw)
-        allowed_ids = {item.id for item in menu_candidates}
-        return validated.model_copy(
-            update={
-                "recommended_dish_ids": [
-                    item_id for item_id in validated.recommended_dish_ids if item_id in allowed_ids
-                ],
-                "avoid_dish_ids": [
-                    item_id for item_id in validated.avoid_dish_ids if item_id in allowed_ids
-                ],
-            }
-        )
+            validated = DailyInsightResponse.model_validate(raw)
+            allowed_ids = {item.id for item in menu_candidates}
+            return validated.model_copy(
+                update={
+                    "recommended_dish_ids": [
+                        item_id for item_id in validated.recommended_dish_ids if item_id in allowed_ids
+                    ],
+                    "avoid_dish_ids": [
+                        item_id for item_id in validated.avoid_dish_ids if item_id in allowed_ids
+                    ],
+                }
+            )
+        except (OpenRouterError, ValidationError):
+            # Upstream model issues (e.g., provider 429/invalid json) should not take down
+            # daily insight UX; fallback to deterministic recommendation from candidates.
+            return self._build_daily_insight_fallback(payload, menu_candidates)
 
     async def generate_chat_recommendation(
         self,
@@ -144,4 +151,31 @@ class InsightService:
             hall_id=hall_id,
             query=None,
             exclude_allergens=allergen_tags,
+        )
+
+    @staticmethod
+    def _build_daily_insight_fallback(
+        payload: DailyInsightRequest,
+        menu_candidates: list[MenuItem],
+    ) -> DailyInsightResponse:
+        top_item = menu_candidates[0] if menu_candidates else None
+        recommended_ids = [top_item.id] if top_item else []
+        recommended_slot = payload.meal_slot or (top_item.meal_slot if top_item else None)
+
+        if payload.lang == "zh":
+            title = "AI 每日洞察"
+            summary = "AI 服务当前繁忙，已基于你的偏好和今日菜单给出稳定推荐。"
+        else:
+            title = "AI Daily Insight"
+            summary = "The AI provider is busy right now, so a stable fallback recommendation is returned."
+
+        return DailyInsightResponse(
+            title=title,
+            summary=summary,
+            recommended_meal_slot=recommended_slot,
+            recommended_dish_ids=recommended_ids,
+            avoid_dish_ids=[],
+            nutrition_focus=[],
+            safety_alerts=[],
+            confidence=0.45,
         )
