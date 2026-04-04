@@ -35,6 +35,9 @@ class Database:
                 min_size=self._settings.db_pool_min_size,
                 max_size=self._settings.db_pool_max_size,
                 command_timeout=self._settings.db_command_timeout_seconds,
+                # Supabase pooler (PgBouncer transaction mode) is incompatible with
+                # asyncpg prepared statement caching.
+                statement_cache_size=0,
             )
 
     async def disconnect(self) -> None:
