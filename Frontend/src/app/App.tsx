@@ -1815,25 +1815,54 @@ export default function App() {
     }
   }, [isSearching]);
 
+  const openingChatMessage = useMemo((): { text: string; recommendedDishId?: string } => {
+    const recommendedDishId = dailyInsight?.recommendedDishId ?? undefined;
+    const summary = dailyInsight?.summary?.trim() || safeFallbackSummary(true);
+    if (!recommendedDishId) {
+      return { text: summary };
+    }
+
+    const recommendedItem = menuItems.find((item) => item.id === recommendedDishId);
+    if (!recommendedItem) {
+      return { text: summary, recommendedDishId };
+    }
+
+    const candidateNames = [recommendedItem.name.en, recommendedItem.name.zh]
+      .filter((name): name is string => Boolean(name && name.trim()))
+      .map((name) => name.trim().toLowerCase());
+    const summaryLower = summary.toLowerCase();
+    const alreadyMentionsCanonical = candidateNames.some((name) => summaryLower.includes(name));
+    if (alreadyMentionsCanonical) {
+      return { text: summary, recommendedDishId };
+    }
+
+    const displayName = getItemDisplayName(recommendedItem, lang);
+    const normalizedText = lang === 'zh'
+      ? `今天更推荐「${displayName}」。${summary}`
+      : `Today's best pick is ${displayName}. ${summary}`;
+    return { text: normalizedText, recommendedDishId };
+  }, [dailyInsight, lang, menuItems, safeFallbackSummary]);
+
   // AI Chat Logic
   useEffect(() => {
     if (isChatOpen && chatMessages.length === 0) {
       // Initialize from the same daily insight result object used by the hero card.
+      const initialRecommendedDishId = openingChatMessage.recommendedDishId;
       setChatConversationContext({
-        last_recommended_item_id: dailyInsight?.recommendedDishId ?? null,
-        last_ranked_candidate_ids: dailyInsight?.recommendedDishId ? [dailyInsight.recommendedDishId] : [],
+        last_recommended_item_id: initialRecommendedDishId ?? null,
+        last_ranked_candidate_ids: initialRecommendedDishId ? [initialRecommendedDishId] : [],
         last_interpreted_intent: null,
       });
       setChatMessages([
         {
           id: '1',
           sender: 'ai',
-          text: dailyInsight?.summary ?? safeFallbackSummary(true),
-          recommendedDishId: dailyInsight?.recommendedDishId ?? undefined,
+          text: openingChatMessage.text,
+          recommendedDishId: initialRecommendedDishId,
         },
       ]);
     }
-  }, [chatMessages.length, dailyInsight, isChatOpen, safeFallbackSummary]);
+  }, [chatMessages.length, isChatOpen, openingChatMessage]);
 
   useEffect(() => {
     // Auto-scroll to bottom of chat
