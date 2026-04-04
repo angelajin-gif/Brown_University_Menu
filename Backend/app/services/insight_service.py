@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from pydantic import ValidationError
 
 from app.db.repositories.menu_repository import MenuRepository
@@ -11,9 +13,12 @@ from app.models.insight import (
     DailyInsightResponse,
 )
 from app.models.menu import MenuItem
+from app.models.preferences import UserPreferences
 from app.services.openrouter_service import OpenRouterError, OpenRouterService
 from app.services.prompt_builder import build_chat_prompt, build_daily_insight_prompt
 from app.services.rag_service import RagService
+
+logger = logging.getLogger(__name__)
 
 
 class InsightService:
@@ -71,10 +76,14 @@ class InsightService:
                     ],
                 }
             )
-        except (OpenRouterError, ValidationError):
-            # Upstream model issues (e.g., provider 429/invalid json) should not take down
-            # daily insight UX; fallback to deterministic recommendation from candidates.
-            return self._build_daily_insight_fallback(payload, menu_candidates)
+        except (OpenRouterError, ValidationError) as error:
+            # Keep provider/model errors in backend logs, but return user-facing fallback insight.
+            logger.warning(
+                "Daily insight fallback triggered for user_id=%s: %s",
+                payload.user_id,
+                error,
+            )
+            return self._build_daily_insight_fallback(payload, menu_candidates, preferences)
 
     async def generate_chat_recommendation(
         self,
@@ -157,17 +166,63 @@ class InsightService:
     def _build_daily_insight_fallback(
         payload: DailyInsightRequest,
         menu_candidates: list[MenuItem],
+        preferences: UserPreferences,
     ) -> DailyInsightResponse:
         top_item = menu_candidates[0] if menu_candidates else None
         recommended_ids = [top_item.id] if top_item else []
         recommended_slot = payload.meal_slot or (top_item.meal_slot if top_item else None)
+        pref_values = [tag.value for tag in preferences.pref_tags]
+        allergen_values = [tag.value for tag in preferences.allergen_tags]
+
+        pref_focus = pref_values[:3]
+        safety_alerts = []
+        if allergen_values:
+            if payload.lang == "zh":
+                safety_alerts.append(
+                    f"已优先规避过敏原：{', '.join(allergen_values[:3])}"
+                )
+            else:
+                safety_alerts.append(
+                    f"Allergen safeguards applied: {', '.join(allergen_values[:3])}"
+                )
 
         if payload.lang == "zh":
             title = "AI 每日洞察"
-            summary = "AI 服务当前繁忙，已基于你的偏好和今日菜单给出稳定推荐。"
+            if top_item:
+                dish_name = top_item.name_zh or top_item.name_en
+                reason_parts = [
+                    f"基于今天可供应菜单，推荐你试试「{dish_name}」。",
+                    "这道菜与当前偏好方向更匹配",
+                ]
+                if pref_values:
+                    reason_parts.append(f"（偏好：{', '.join(pref_values[:3])}）")
+                if allergen_values:
+                    reason_parts.append(f"，并已避开你设置的过敏原限制。")
+                else:
+                    reason_parts.append("。")
+                summary = "".join(reason_parts)
+            else:
+                summary = "今天暂未找到足够强匹配的单品推荐。你可以调整筛选条件或偏好后再试。"
         else:
             title = "AI Daily Insight"
-            summary = "The AI provider is busy right now, so a stable fallback recommendation is returned."
+            if top_item:
+                dish_name = top_item.name_en or top_item.name_zh
+                reason_parts = [
+                    f"From today's available menu, {dish_name} is the best fit right now",
+                ]
+                if pref_values:
+                    reason_parts.append(
+                        f" for your current preferences ({', '.join(pref_values[:3])})"
+                    )
+                if allergen_values:
+                    reason_parts.append(" while respecting your allergen settings.")
+                else:
+                    reason_parts.append(".")
+                summary = "".join(reason_parts)
+            else:
+                summary = (
+                    "No strong single-item match was found today. Try adjusting filters or preferences."
+                )
 
         return DailyInsightResponse(
             title=title,
@@ -175,7 +230,7 @@ class InsightService:
             recommended_meal_slot=recommended_slot,
             recommended_dish_ids=recommended_ids,
             avoid_dish_ids=[],
-            nutrition_focus=[],
-            safety_alerts=[],
-            confidence=0.45,
+            nutrition_focus=pref_focus,
+            safety_alerts=safety_alerts,
+            confidence=0.58 if top_item else 0.35,
         )
