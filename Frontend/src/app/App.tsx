@@ -183,6 +183,7 @@ type MenuItem = {
   externalLocationName: string | null;
   stationName: string | null;
   mealSlot: MealTab;
+  serviceDate: string | null;
 };
 
 type BackendMenuItem = {
@@ -198,11 +199,34 @@ type BackendMenuItem = {
   external_location_name?: string | null;
   station_name?: string | null;
   meal_slot: MealTab;
+  service_date?: string | null;
 };
 
 type BackendMenuListResponse = {
   items: BackendMenuItem[];
   total: number;
+};
+
+type CustomStationNutritionSummary = {
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+};
+
+type CustomStationSelectionResult = {
+  menu_item_id: string;
+  name_en: string;
+  name_zh: string;
+  servings: number;
+  subtotal: CustomStationNutritionSummary;
+};
+
+type CustomStationNutritionResponse = {
+  station_name: string | null;
+  service_date: string | null;
+  selections: CustomStationSelectionResult[];
+  totals: CustomStationNutritionSummary;
 };
 
 const normalizeBaseUrl = (value: string | undefined): string => (value ?? '').trim().replace(/\/$/, '');
@@ -218,6 +242,9 @@ const isAbsoluteHttpUrl = (value: string): boolean => {
 
 const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL as string | undefined);
 const MENUS_API_URL = isAbsoluteHttpUrl(API_BASE_URL) ? `${API_BASE_URL}/api/v1/menus` : null;
+const CUSTOM_STATION_CALCULATE_API_URL = isAbsoluteHttpUrl(API_BASE_URL)
+  ? `${API_BASE_URL}/custom-station/calculate`
+  : null;
 
 const DIETARY_TAGS: DietaryTag[] = [
   'vegan',
@@ -738,6 +765,7 @@ const toMenuItem = (item: BackendMenuItem): MenuItem => ({
   externalLocationName: item.external_location_name ?? null,
   stationName: item.station_name ?? null,
   mealSlot: normalizeMealSlotForDisplay(item.meal_slot, item.external_location_name, item.station_name),
+  serviceDate: item.service_date ?? null,
 });
 
 type ChatMessage = {
@@ -911,11 +939,17 @@ const MenuItemCard = ({
 const CustomStationCard = ({
   stationName,
   rawCount,
+  onClick,
 }: {
   stationName: string;
   rawCount: number;
+  onClick: () => void;
 }) => (
-  <div className="bg-white rounded-2xl shadow-sm border border-dashed border-indigo-200/70 p-4 mb-3">
+  <button
+    type="button"
+    onClick={onClick}
+    className="w-full text-left bg-white rounded-2xl shadow-sm border border-dashed border-indigo-200/70 p-4 mb-3 active:scale-[0.99] transition-transform"
+  >
     <div className="flex items-center justify-between mb-1.5">
       <h3 className="font-semibold text-gray-900">{stationName}</h3>
       <span className="text-[10px] font-semibold uppercase tracking-wide text-indigo-600 bg-indigo-50 px-2 py-1 rounded-full">
@@ -928,7 +962,7 @@ const CustomStationCard = ({
     <p className="mt-2 text-[11px] text-gray-400">
       {rawCount} raw options available
     </p>
-  </div>
+  </button>
 );
 
 
@@ -965,6 +999,15 @@ export default function App() {
   const [aiAutoPush, setAiAutoPush] = useState(true);
   const [prefTags, setPrefTags] = useState<DietaryTag[]>(['high-protein', 'low-calorie']);
   const [allergenTags, setAllergenTags] = useState<AllergenTag[]>(['gluten-free']);
+  const [activeCustomStation, setActiveCustomStation] = useState<{
+    stationName: string;
+    rawItems: MenuItem[];
+    serviceDate: string | null;
+  } | null>(null);
+  const [customStationSelectedIds, setCustomStationSelectedIds] = useState<string[]>([]);
+  const [isCustomStationCalculating, setIsCustomStationCalculating] = useState(false);
+  const [customStationResult, setCustomStationResult] = useState<CustomStationNutritionResponse | null>(null);
+  const [customStationError, setCustomStationError] = useState<string | null>(null);
 
   const toggleFavorite = (id: string) => {
     setFavorites(prev => prev.includes(id) ? prev.filter(fid => fid !== id) : [...prev, id]);
@@ -976,6 +1019,92 @@ export default function App() {
   
   const toggleAllergenTag = (tag: AllergenTag) => {
     setAllergenTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+  };
+
+  const openCustomStationSheet = (stationName: string, rawItems: MenuItem[]) => {
+    const uniqueItems = Array.from(new Map(rawItems.map((item) => [item.id, item])).values());
+    const serviceDates = Array.from(
+      new Set(uniqueItems.map((item) => item.serviceDate).filter((value): value is string => Boolean(value)))
+    );
+
+    setActiveCustomStation({
+      stationName,
+      rawItems: uniqueItems,
+      serviceDate: serviceDates.length === 1 ? serviceDates[0] : null,
+    });
+    setCustomStationSelectedIds([]);
+    setCustomStationResult(null);
+    setCustomStationError(null);
+    setIsCustomStationCalculating(false);
+  };
+
+  const closeCustomStationSheet = () => {
+    setActiveCustomStation(null);
+    setCustomStationSelectedIds([]);
+    setCustomStationResult(null);
+    setCustomStationError(null);
+    setIsCustomStationCalculating(false);
+  };
+
+  const toggleCustomStationSelection = (itemId: string) => {
+    setCustomStationSelectedIds((prev) =>
+      prev.includes(itemId) ? prev.filter((id) => id !== itemId) : [...prev, itemId]
+    );
+  };
+
+  const handleCalculateCustomStation = async () => {
+    if (!activeCustomStation || customStationSelectedIds.length === 0 || isCustomStationCalculating) {
+      return;
+    }
+
+    if (!CUSTOM_STATION_CALCULATE_API_URL) {
+      setCustomStationError('VITE_API_BASE_URL is missing or invalid.');
+      return;
+    }
+
+    setIsCustomStationCalculating(true);
+    setCustomStationError(null);
+    setCustomStationResult(null);
+
+    try {
+      const payload: {
+        selections: Array<{ menu_item_id: string; servings: number }>;
+        station_name: string;
+        service_date?: string;
+      } = {
+        selections: customStationSelectedIds.map((menuItemId) => ({
+          menu_item_id: menuItemId,
+          servings: 1,
+        })),
+        station_name: activeCustomStation.stationName,
+      };
+
+      if (activeCustomStation.serviceDate) {
+        payload.service_date = activeCustomStation.serviceDate;
+      }
+
+      const response = await fetch(CUSTOM_STATION_CALCULATE_API_URL, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorPayload = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(errorPayload?.detail || `Request failed: ${response.status}`);
+      }
+
+      const result = (await response.json()) as CustomStationNutritionResponse;
+      setCustomStationResult(result);
+    } catch (error) {
+      console.error('Failed to calculate custom station nutrition:', error);
+      setCustomStationError(error instanceof Error ? error.message : 'Failed to calculate nutrition.');
+    } finally {
+      setIsCustomStationCalculating(false);
+    }
   };
 
   const hallOptions = useMemo(() => {
@@ -1260,6 +1389,7 @@ export default function App() {
                 <CustomStationCard
                   stationName={section.stationName}
                   rawCount={section.rawItems.length}
+                  onClick={() => openCustomStationSheet(section.stationName, section.rawItems)}
                 />
               ) : (
                 section.items.map((item) => (
@@ -1570,6 +1700,100 @@ export default function App() {
             <span className="text-[10px] font-bold">{t.settings}</span>
           </button>
         </nav>
+
+        {activeCustomStation && (
+          <div className="absolute inset-0 z-50 bg-black/40 flex items-end">
+            <div className="w-full max-h-[82vh] bg-white rounded-t-3xl p-4 flex flex-col">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-base font-bold text-gray-900">{activeCustomStation.stationName}</h3>
+                <button
+                  type="button"
+                  onClick={closeCustomStationSheet}
+                  className="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-100 text-gray-600"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="overflow-y-auto hide-scrollbar pr-1">
+                <p className="text-xs text-gray-500 mb-3">Select ingredients ({activeCustomStation.rawItems.length})</p>
+                <div className="space-y-2 mb-4">
+                  {activeCustomStation.rawItems.map((item) => {
+                    const checked = customStationSelectedIds.includes(item.id);
+                    return (
+                      <label
+                        key={item.id}
+                        className={cn(
+                          "flex items-center justify-between gap-3 p-2.5 rounded-xl border",
+                          checked ? "border-indigo-300 bg-indigo-50/50" : "border-gray-200 bg-white"
+                        )}
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">{item.name.en}</p>
+                          <p className="text-[11px] text-gray-500 truncate">{item.name.zh}</p>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleCustomStationSelection(item.id)}
+                          className="h-4 w-4 rounded border-gray-300 text-indigo-600"
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void handleCalculateCustomStation()}
+                  disabled={customStationSelectedIds.length === 0 || isCustomStationCalculating}
+                  className={cn(
+                    "w-full rounded-xl py-2.5 text-sm font-semibold mb-3",
+                    customStationSelectedIds.length === 0 || isCustomStationCalculating
+                      ? "bg-gray-200 text-gray-500"
+                      : "bg-indigo-600 text-white"
+                  )}
+                >
+                  {isCustomStationCalculating ? 'Calculating...' : 'Calculate'}
+                </button>
+
+                {customStationError && (
+                  <div className="mb-3 p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700">
+                    {customStationError}
+                  </div>
+                )}
+
+                {customStationResult && (
+                  <div className="pb-4">
+                    <h4 className="text-sm font-semibold text-gray-900 mb-2">Selections</h4>
+                    <div className="space-y-2 mb-3">
+                      {customStationResult.selections.map((selection) => (
+                        <div key={selection.menu_item_id} className="rounded-xl border border-gray-200 p-2.5">
+                          <p className="text-sm font-medium text-gray-900">
+                            {lang === 'zh' ? selection.name_zh || selection.name_en : selection.name_en}
+                          </p>
+                          <p className="text-[11px] text-gray-500">
+                            Subtotal: {selection.subtotal.calories.toFixed(1)} kcal | P {selection.subtotal.protein.toFixed(1)}g | C {selection.subtotal.carbs.toFixed(1)}g | F {selection.subtotal.fat.toFixed(1)}g
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-3">
+                      <h5 className="text-sm font-semibold text-gray-900 mb-1.5">Totals</h5>
+                      <p className="text-xs text-gray-700">
+                        {customStationResult.totals.calories.toFixed(1)} kcal
+                      </p>
+                      <p className="text-xs text-gray-700">
+                        Protein {customStationResult.totals.protein.toFixed(1)}g | Carbs {customStationResult.totals.carbs.toFixed(1)}g | Fat {customStationResult.totals.fat.toFixed(1)}g
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* AI Chat Overlay Modal */}
         {isChatOpen && (
