@@ -207,6 +207,19 @@ type BackendMenuListResponse = {
   total: number;
 };
 
+type BackendUserPreferencesResponse = {
+  user_id: string;
+  favorite_hall: HallId;
+  ai_auto_push: boolean;
+  pref_tags: string[];
+  allergen_tags: string[];
+};
+
+type BackendFavoritesResponse = {
+  user_id: string;
+  menu_item_ids: string[];
+};
+
 type CustomStationNutritionSummary = {
   calories: number;
   protein: number;
@@ -245,6 +258,83 @@ const MENUS_API_URL = isAbsoluteHttpUrl(API_BASE_URL) ? `${API_BASE_URL}/api/v1/
 const CUSTOM_STATION_CALCULATE_API_URL = isAbsoluteHttpUrl(API_BASE_URL)
   ? `${API_BASE_URL}/api/v1/custom-station/calculate`
   : null;
+
+const buildUserPreferencesApiUrl = (userId: string): string =>
+  `${API_BASE_URL}/api/v1/users/${encodeURIComponent(userId)}/preferences`;
+
+const buildUserFavoritesApiUrl = (userId: string): string =>
+  `${API_BASE_URL}/api/v1/users/${encodeURIComponent(userId)}/favorites`;
+
+type AuthContext = {
+  userId: string;
+  accessToken: string;
+};
+
+const decodeJwtPayload = (token: string): Record<string, unknown> | null => {
+  const parts = token.split('.');
+  if (parts.length < 2) return null;
+
+  try {
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = `${base64}${'='.repeat((4 - (base64.length % 4)) % 4)}`;
+    const decoded = atob(padded);
+    const payload = JSON.parse(decoded) as Record<string, unknown>;
+    return payload;
+  } catch {
+    return null;
+  }
+};
+
+const extractAccessTokenFromSupabaseStorage = (): string | null => {
+  if (typeof window === 'undefined') return null;
+
+  const tryReadStorage = (storage: Storage): string | null => {
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (!key || !key.startsWith('sb-') || !key.endsWith('-auth-token')) continue;
+
+      const rawValue = storage.getItem(key);
+      if (!rawValue) continue;
+
+      try {
+        const parsed = JSON.parse(rawValue) as
+          | { access_token?: string; currentSession?: { access_token?: string }; session?: { access_token?: string } }
+          | string;
+        if (typeof parsed === 'string' && parsed.trim()) {
+          return parsed.trim();
+        }
+        if (typeof parsed === 'object' && parsed !== null) {
+          const token =
+            parsed.access_token ??
+            parsed.currentSession?.access_token ??
+            parsed.session?.access_token ??
+            '';
+          if (typeof token === 'string' && token.trim()) {
+            return token.trim();
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return null;
+  };
+
+  return tryReadStorage(window.localStorage) ?? tryReadStorage(window.sessionStorage);
+
+};
+
+const getSupabaseAuthContextFromStorage = (): AuthContext | null => {
+  const accessToken = extractAccessTokenFromSupabaseStorage();
+  if (!accessToken) return null;
+
+  const payload = decodeJwtPayload(accessToken);
+  const userId = typeof payload?.sub === 'string' ? payload.sub.trim() : '';
+  if (!userId) return null;
+
+  return { userId, accessToken };
+};
 
 const DIETARY_TAGS: DietaryTag[] = [
   'vegan',
@@ -1008,9 +1098,46 @@ export default function App() {
   const [isCustomStationCalculating, setIsCustomStationCalculating] = useState(false);
   const [customStationResult, setCustomStationResult] = useState<CustomStationNutritionResponse | null>(null);
   const [customStationError, setCustomStationError] = useState<string | null>(null);
+  const [authContext, setAuthContext] = useState<AuthContext | null>(null);
+  const [hasHydratedUserState, setHasHydratedUserState] = useState(false);
+
+  const buildAuthHeaders = (accessToken: string, includeJsonContentType = false): HeadersInit => ({
+    Accept: 'application/json',
+    ...(includeJsonContentType ? { 'Content-Type': 'application/json' } : {}),
+    Authorization: `Bearer ${accessToken}`,
+  });
+
+  const syncFavoritesToBackend = async (nextFavorites: string[], rollbackFavorites: string[]) => {
+    if (!authContext || !isAbsoluteHttpUrl(API_BASE_URL)) return;
+
+    try {
+      const response = await fetch(buildUserFavoritesApiUrl(authContext.userId), {
+        method: 'PUT',
+        headers: buildAuthHeaders(authContext.accessToken, true),
+        body: JSON.stringify({ menu_item_ids: nextFavorites }),
+      });
+
+      if (!response.ok) {
+        const errorPayload = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(errorPayload?.detail || `Favorites request failed: ${response.status}`);
+      }
+
+      const payload = (await response.json()) as BackendFavoritesResponse;
+      if (Array.isArray(payload.menu_item_ids)) {
+        setFavorites(payload.menu_item_ids.filter((id): id is string => typeof id === 'string'));
+      }
+    } catch (error) {
+      console.error('Failed to sync favorites:', error);
+      setFavorites(rollbackFavorites);
+    }
+  };
 
   const toggleFavorite = (id: string) => {
-    setFavorites(prev => prev.includes(id) ? prev.filter(fid => fid !== id) : [...prev, id]);
+    setFavorites((prev) => {
+      const next = prev.includes(id) ? prev.filter((fid) => fid !== id) : [...prev, id];
+      void syncFavoritesToBackend(next, prev);
+      return next;
+    });
   };
 
   const togglePrefTag = (tag: DietaryTag) => {
@@ -1144,6 +1271,108 @@ export default function App() {
       setSelectedLocation('all');
     }
   }, [hallOptions, selectedLocation]);
+
+  useEffect(() => {
+    const context = getSupabaseAuthContextFromStorage();
+    setAuthContext(context);
+    if (!context) {
+      setHasHydratedUserState(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!authContext || !isAbsoluteHttpUrl(API_BASE_URL)) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const hydrateUserState = async () => {
+      try {
+        const [preferencesResponse, favoritesResponse] = await Promise.all([
+          fetch(buildUserPreferencesApiUrl(authContext.userId), {
+            headers: buildAuthHeaders(authContext.accessToken),
+          }),
+          fetch(buildUserFavoritesApiUrl(authContext.userId), {
+            headers: buildAuthHeaders(authContext.accessToken),
+          }),
+        ]);
+
+        if (preferencesResponse.ok) {
+          const preferencesPayload = (await preferencesResponse.json()) as BackendUserPreferencesResponse;
+          if (!cancelled) {
+            if (preferencesPayload.favorite_hall === 'hall1' || preferencesPayload.favorite_hall === 'hall2') {
+              setFavHall(preferencesPayload.favorite_hall);
+            }
+            setAiAutoPush(Boolean(preferencesPayload.ai_auto_push));
+            setPrefTags((preferencesPayload.pref_tags ?? []).filter(isDietaryTag));
+            setAllergenTags((preferencesPayload.allergen_tags ?? []).filter(isAllergenTag));
+          }
+        } else {
+          console.error(`Failed to load preferences: ${preferencesResponse.status}`);
+        }
+
+        if (favoritesResponse.ok) {
+          const favoritesPayload = (await favoritesResponse.json()) as BackendFavoritesResponse;
+          if (!cancelled && Array.isArray(favoritesPayload.menu_item_ids)) {
+            setFavorites(favoritesPayload.menu_item_ids.filter((id): id is string => typeof id === 'string'));
+          }
+        } else {
+          console.error(`Failed to load favorites: ${favoritesResponse.status}`);
+        }
+      } catch (error) {
+        console.error('Failed to hydrate user state:', error);
+      } finally {
+        if (!cancelled) {
+          setHasHydratedUserState(true);
+        }
+      }
+    };
+
+    void hydrateUserState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authContext]);
+
+  useEffect(() => {
+    if (!authContext || !hasHydratedUserState || !isAbsoluteHttpUrl(API_BASE_URL)) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const persistPreferences = async () => {
+      try {
+        const response = await fetch(buildUserPreferencesApiUrl(authContext.userId), {
+          method: 'PUT',
+          headers: buildAuthHeaders(authContext.accessToken, true),
+          body: JSON.stringify({
+            favorite_hall: favHall,
+            ai_auto_push: aiAutoPush,
+            pref_tags: prefTags,
+            allergen_tags: allergenTags,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorPayload = (await response.json().catch(() => null)) as { detail?: string } | null;
+          throw new Error(errorPayload?.detail || `Preferences request failed: ${response.status}`);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to persist preferences:', error);
+        }
+      }
+    };
+
+    void persistPreferences();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authContext, hasHydratedUserState, favHall, aiAutoPush, prefTags, allergenTags]);
 
   useEffect(() => {
     let cancelled = false;
