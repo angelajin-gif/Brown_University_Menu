@@ -61,6 +61,17 @@ class BrownMenuSyncService:
     async def sync_menu_items(self) -> dict[str, str | int]:
         payload = await self._fetch_raw_payload()
         normalized_payload = self._normalize_payload_hours(payload)
+        normalized_payload, normalized_null_counts = self._normalize_menu_item_nullable_fields(
+            normalized_payload
+        )
+        normalized_null_total = sum(normalized_null_counts.values())
+        print(
+            "[brown-menu-sync] normalized null menu item fields "
+            f"total={normalized_null_total} "
+            f"icons={normalized_null_counts['icons']} "
+            f"allergens={normalized_null_counts['allergens']} "
+            f"description={normalized_null_counts['description']}"
+        )
         locations = TypeAdapter(list[BrownLocationMenu]).validate_python(normalized_payload)
 
         service_date = self._service_date_today()
@@ -91,6 +102,43 @@ class BrownMenuSyncService:
         if not isinstance(payload, list):
             raise ValueError("Brown menu payload must be a JSON array")
         return payload
+
+    def _normalize_menu_item_nullable_fields(
+        self,
+        payload: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        counts = {
+            "icons": 0,
+            "allergens": 0,
+            "description": 0,
+        }
+
+        def normalize_node(node: Any) -> None:
+            if isinstance(node, list):
+                for child in node:
+                    normalize_node(child)
+                return
+
+            if not isinstance(node, dict):
+                return
+
+            is_menu_item = "itemId" in node and "item" in node and "itemType" in node
+            if is_menu_item:
+                if node.get("icons") is None:
+                    node["icons"] = []
+                    counts["icons"] += 1
+                if node.get("allergens") is None:
+                    node["allergens"] = []
+                    counts["allergens"] += 1
+                if node.get("description") is None:
+                    node["description"] = ""
+                    counts["description"] += 1
+
+            for value in node.values():
+                normalize_node(value)
+
+        normalize_node(payload)
+        return payload, counts
 
     @staticmethod
     def _parse_datetime_like(value: object) -> object:
